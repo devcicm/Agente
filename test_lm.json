@@ -1,0 +1,15 @@
+{
+  "model": "gpt-oss-20b-gpt-5-reasoning-distill",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Eres un asistente CLI inteligente. Responde SOLO con JSON válido."
+    },
+    {
+      "role": "user",
+      "content": "El usuario dijo: \"quien fue miguel hidalgo\"\n\nHerramientas disponibles: read_file, write_file, list_directory, search_files, run_shell_command, sql_command, list_databases, list_tables, http_request, web_search, list_processes, kill_process, analyze_code, search_code\nDirectorio actual: C:\\Users\\Carlos Ivan\\Desktop\\Agente\\Plataforma\\C#\\bin\\Debug\\net9.0\n\nAnaliza la solicitud y responde SOLO con JSON válido:\n\n{\n    \"thought\": \"breve análisis del pedido del usuario\",\n    \"action\": \"descripción de qué hacer\",\n    \"tool_name\": \"nombre_herramienta o null si es conversación\",\n    \"tool_arguments\": {}\n}\n\nEjemplos:\n- Para \"lista archivos\": {\"thought\": \"Usuario quiere ver archivos\", \"action\": \"Listar directorio\", \"tool_name\": \"list_directory\", \"tool_arguments\": {\"path\": \".\"}}\n- Para \"hola\": {\"thought\": \"Saludo amistoso\", \"action\": \"Responder saludo\", \"tool_name\": null}\n- Para \"busca archivos txt\": {\"thought\": \"Buscar archivos de texto\", \"action\": \"Buscar archivos\", \"tool_name\": \"search_files\", \"tool_arguments\": {\"pattern\": \"*.txt\"}}"
+    }
+  ],
+  "temperature": 0.1,
+  "max_tokens": 500
+}

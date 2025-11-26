@@ -185,31 +185,42 @@ internal sealed class Agent
             return FormatToolResult(result);
         }
 
-        return "No se pudo determinar qué acción tomar.";
+        // Manejar casos especiales sin herramienta
+        if (reasoning.Action?.Contains("directorio actual") == true)
+        {
+            return $"📁 Directorio actual: {_context.CurrentDirectory}";
+        }
+
+        return reasoning.Thought;
     }
 
     private async Task<ReasoningStep> GenerateReasoningStepAsync(string userInput, CancellationToken cancellationToken)
     {
         var prompt = BuildReasoningPrompt(userInput);
 
-        // ✅ USAR COMPLETIONS API en lugar de Chat Completions
-        var request = new CompletionRequest
+        // ✅ USAR CHAT COMPLETIONS API (compatible con tu modelo)
+        var request = new ChatCompletionRequest
         {
             Model = ModelId,
-            Prompt = prompt,
+            Messages = new List<ChatMessage>
+            {
+                new("system", "Eres un asistente CLI inteligente. Responde SOLO con JSON válido."),
+                new("user", prompt)
+            },
             Temperature = 0.1,
-            MaxTokens = 300,
-            Stop = new List<string> { "\n\n", "```" }
+            MaxTokens = 500
         };
 
         try
         {
-            var response = await _llm.CreateCompletionAsync(request, cancellationToken);
-            var content = response.Choices.First().Text;
+            var response = await _llm.CreateChatCompletionAsync(request, cancellationToken);
+            var content = response.Choices.First().Message.Content ?? "{}";
             return ParseReasoningResponse(content);
         }
         catch (Exception ex)
         {
+            // Log del error para debugging
+            Console.WriteLine($"[DEBUG] Error en LLM: {ex.Message}");
             // Fallback inteligente basado en el input
             return CreateIntelligentFallback(userInput);
         }
@@ -219,57 +230,114 @@ internal sealed class Agent
     {
         var toolsList = string.Join(", ", _tools.Keys);
 
-        return $$"""
-    Eres un asistente de CLI. El usuario dijo: "{{userInput}}"
+        return $$$"""
+    El usuario dijo: "{{{userInput}}}"
 
-    Herramientas disponibles: {{toolsList}}
-    Directorio actual: {{_context.CurrentDirectory}}
+    Herramientas disponibles: {{{toolsList}}}
+    Directorio actual: {{{_context.CurrentDirectory}}}
 
-    Responde SOLO con JSON válido:
+    Analiza la solicitud y responde SOLO con JSON válido:
 
     {
-        "thought": "breve análisis",
-        "action": "qué hacer",
-        "tool_name": "herramienta o null",
+        "thought": "breve análisis del pedido del usuario",
+        "action": "descripción de qué hacer",
+        "tool_name": "nombre_herramienta o null si es conversación",
         "tool_arguments": {}
     }
 
-    Si es un saludo o conversación, usa "tool_name": null.
+    Ejemplos:
+    - Para "lista archivos": {"thought": "Usuario quiere ver archivos", "action": "Listar directorio", "tool_name": "list_directory", "tool_arguments": {"path": "."}}
+    - Para "hola": {"thought": "Saludo amistoso", "action": "Responder saludo", "tool_name": null}
+    - Para "busca archivos txt": {"thought": "Buscar archivos de texto", "action": "Buscar archivos", "tool_name": "search_files", "tool_arguments": {"pattern": "*.txt"}}
     """;
     }
 
     private ReasoningStep CreateIntelligentFallback(string input)
     {
-        input = input.ToLowerInvariant();
+        var inputLower = input.ToLowerInvariant();
 
-        // Detectar tipo de solicitud
-        if (input.Contains("listar") || input.Contains("archivos") || input.Contains("directorio") ||
-            input.Contains("carpeta") || input.Contains("qué hay") || input.Contains("muestra") ||
-            input.Contains("mostrar") || input.Contains("contenido"))
+        // Detectar preguntas generales que requieren web search
+        if ((inputLower.Contains("quien") || inputLower.Contains("qué es") || inputLower.Contains("que es") ||
+             inputLower.Contains("cuál es") || inputLower.Contains("cómo") || inputLower.Contains("cuando") ||
+             inputLower.Contains("dónde") || inputLower.Contains("por qué")) &&
+            !inputLower.Contains("archivo") && !inputLower.Contains("directorio") && !inputLower.Contains("carpeta"))
         {
             return new ReasoningStep
             {
-                Thought = "Usuario quiere ver archivos del directorio",
+                Thought = "Pregunta general que requiere búsqueda web",
+                Action = "Buscando información en la web",
+                ToolName = "web_search",
+                ToolArguments = JsonDocument.Parse($$"""{"query": "{{input}}"}""").RootElement
+            };
+        }
+
+        // Detectar comando para mostrar directorio actual
+        if (inputLower.Contains("en que directorio") || inputLower.Contains("directorio actual") ||
+            inputLower.Contains("pwd") || (inputLower.Contains("donde") && inputLower.Contains("estoy")))
+        {
+            return new ReasoningStep
+            {
+                Thought = "Usuario quiere saber el directorio actual",
+                Action = "Mostrando directorio actual",
+                ToolName = null,  // No requiere herramienta, se maneja en el contexto
+                ToolArguments = null
+            };
+        }
+
+        // Detectar listado de directorio específico
+        if (inputLower.Contains("qué hay en") || inputLower.Contains("que hay en") ||
+            inputLower.Contains("listar") || inputLower.Contains("muestra"))
+        {
+            // Intentar extraer el nombre del directorio
+            var directory = ExtractDirectoryPath(input, inputLower);
+            return new ReasoningStep
+            {
+                Thought = $"Usuario quiere ver contenido de {directory}",
+                Action = $"Listando contenido de {directory}",
+                ToolName = "list_directory",
+                ToolArguments = JsonDocument.Parse($$"""{"path": "{{directory}}"}""").RootElement
+            };
+        }
+
+        // Detectar listado simple de archivos
+        if (inputLower.Contains("archivos") || inputLower.Contains("carpeta") ||
+            inputLower.Contains("contenido") || inputLower.Contains("ls"))
+        {
+            return new ReasoningStep
+            {
+                Thought = "Usuario quiere ver archivos del directorio actual",
                 Action = "Listando contenido del directorio",
                 ToolName = "list_directory",
                 ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
             };
         }
-        else if (input.Contains("leer") && input.Contains("archivo"))
+        else if ((inputLower.Contains("leer") || inputLower.Contains("ver")) && inputLower.Contains("archivo"))
         {
             return new ReasoningStep
             {
-                Thought = "Usuario quiere leer un archivo",
+                Thought = "Usuario quiere leer un archivo, necesito buscar archivos disponibles primero",
                 Action = "Buscando archivos para leer",
+                ToolName = "list_directory",
+                ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
+            };
+        }
+        else if (inputLower.Contains("buscar") || inputLower.Contains("encontrar") || inputLower.Contains("search"))
+        {
+            // Extraer término de búsqueda simple
+            var searchTerm = ExtractSearchTerm(input);
+            return new ReasoningStep
+            {
+                Thought = $"Usuario quiere buscar: {searchTerm}",
+                Action = "Realizando búsqueda",
                 ToolName = "search_files",
-                ToolArguments = JsonDocument.Parse("""{"pattern": "*.txt"}""").RootElement
+                ToolArguments = JsonDocument.Parse($$"""{"pattern": "*{{searchTerm}}*", "path": "."}""").RootElement
             };
         }
         else if (IsConversationalInput(input))
         {
             return new ReasoningStep
             {
-                Thought = "Es una conversación, no requiere acción",
+                Thought = "Es una conversación, no requiere acción de herramienta",
                 Action = "Respondiendo conversación",
                 ToolName = null,
                 ToolArguments = null
@@ -277,15 +345,55 @@ internal sealed class Agent
         }
         else
         {
-            // Por defecto, explorar
+            // Por defecto, pregunta conversacional genérica
             return new ReasoningStep
             {
-                Thought = "Explorando entorno para entender mejor",
-                Action = "Listando directorio actual",
-                ToolName = "list_directory",
-                ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
+                Thought = "Pregunta general, buscaré información en la web",
+                Action = "Buscando respuesta en la web",
+                ToolName = "web_search",
+                ToolArguments = JsonDocument.Parse($$"""{"query": "{{input}}"}""").RootElement
             };
         }
+    }
+
+    private string ExtractDirectoryPath(string input, string inputLower)
+    {
+        // Buscar patrones como "que hay en documentos", "lista /tmp", etc.
+        if (inputLower.Contains("en "))
+        {
+            var parts = input.Split(new[] { " en ", " EN " }, StringSplitOptions.None);
+            if (parts.Length > 1)
+            {
+                var path = parts[1].Trim();
+                // Remover palabras comunes al final
+                path = path.Replace("?", "").Trim();
+                return string.IsNullOrWhiteSpace(path) ? "." : path;
+            }
+        }
+
+        // Buscar una palabra que parezca una ruta
+        var words = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var word in words)
+        {
+            var cleanWord = word.Trim('?', '.', ',', '!');
+            if (cleanWord.Contains("/") || cleanWord.Contains("\\") || cleanWord.Contains(":"))
+                return cleanWord;
+        }
+
+        return ".";
+    }
+
+    private string ExtractSearchTerm(string input)
+    {
+        var words = input.Split(' ');
+        for (int i = 0; i < words.Length; i++)
+        {
+            if (words[i].Contains("buscar") || words[i].Contains("encontrar") || words[i].Contains("search"))
+            {
+                return i + 1 < words.Length ? words[i + 1] : "archivo";
+            }
+        }
+        return "archivo";
     }
 
     private bool IsConversationalInput(string input)
@@ -294,7 +402,8 @@ internal sealed class Agent
         return lower.Contains("hola") || lower.Contains("adiós") || lower.Contains("gracias") ||
                lower.Contains("cómo estás") || lower.Contains("qué tal") || lower.Contains("buenos días") ||
                lower.Contains("buenas tardes") || lower.Contains("buenas noches") ||
-               lower.Contains("hi") || lower.Contains("hello") || lower.Contains("bye");
+               lower.Contains("hi") || lower.Contains("hello") || lower.Contains("bye") ||
+               lower.Contains("quién eres") || lower.Contains("qué puedes hacer");
     }
 
     private string GenerateConversationalResponse(string input)
@@ -302,15 +411,19 @@ internal sealed class Agent
         var lower = input.ToLowerInvariant();
 
         if (lower.Contains("hola") || lower.Contains("hi") || lower.Contains("hello"))
-            return "¡Hola! Soy tu asistente CLI. ¿En qué puedo ayudarte?";
+            return "¡Hola! Soy tu asistente CLI inteligente. ¿En qué puedo ayudarte?";
         if (lower.Contains("cómo estás") || lower.Contains("qué tal"))
-            return "¡Estoy funcionando bien! Listo para ayudarte con tareas de CLI.";
+            return "¡Estoy funcionando perfectamente! Listo para ayudarte con tareas de sistema, archivos, base de datos y más.";
         if (lower.Contains("gracias"))
-            return "¡De nada! Estoy aquí para ayudarte.";
+            return "¡De nada! Estoy aquí para ayudarte. ¿Necesitas algo más?";
         if (lower.Contains("adiós") || lower.Contains("chao") || lower.Contains("bye"))
-            return "¡Hasta luego! Vuelve si necesitas más ayuda.";
+            return "¡Hasta luego! Vuelve cuando necesites ayuda.";
+        if (lower.Contains("quién eres") || lower.Contains("qué eres"))
+            return "Soy un agente CLI inteligente que puede ayudarte con archivos, comandos shell, base de datos, búsquedas web y más.";
+        if (lower.Contains("qué puedes hacer"))
+            return "Puedo: listar archivos, leer/escribir archivos, ejecutar comandos, consultar bases de datos, buscar en la web, gestionar procesos y analizar código.";
 
-        return "¡Hola! ¿En qué puedo asistirte?";
+        return "¡Hola! ¿En qué puedo asistirte hoy?";
     }
 
     private async Task<string> ExecuteActionAsync(string toolName, JsonElement? toolArgs, CancellationToken cancellationToken)
@@ -341,7 +454,11 @@ internal sealed class Agent
                 case "list_directory":
                     if (toolArgs?.TryGetProperty("path", out var pathProp) == true)
                     {
-                        _context.CurrentDirectory = pathProp.GetString() ?? _context.CurrentDirectory;
+                        var path = pathProp.GetString();
+                        if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                        {
+                            _context.CurrentDirectory = Path.GetFullPath(path);
+                        }
                     }
                     break;
             }
@@ -357,28 +474,63 @@ internal sealed class Agent
         try
         {
             var doc = JsonDocument.Parse(result);
-            if (doc.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean() &&
-                doc.RootElement.TryGetProperty("data", out var data))
+            if (doc.RootElement.TryGetProperty("ok", out var ok) && ok.GetBoolean())
             {
-                if (data.TryGetProperty("items", out var items))
+                if (doc.RootElement.TryGetProperty("data", out var data))
                 {
-                    var fileList = items.EnumerateArray()
-                        .Select(item =>
-                            item.TryGetProperty("name", out var name) ? name.GetString() : "?")
-                        .Where(name => !string.IsNullOrEmpty(name))
-                        .ToList();
+                    // Formatear lista de archivos
+                    if (data.TryGetProperty("items", out var items) && items.ValueKind == JsonValueKind.Array)
+                    {
+                        var fileList = new List<string>();
+                        foreach (var item in items.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                            {
+                                var type = item.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : "file";
+                                var size = item.TryGetProperty("size", out var sizeProp) ? sizeProp.GetInt64() : 0;
+                                var sizeStr = type == "file" ? $" ({FormatFileSize(size)})" : "";
+                                fileList.Add($"{type[0]}: {name.GetString()}{sizeStr}");
+                            }
+                        }
+                        
+                        if (fileList.Count > 0)
+                        {
+                            var path = data.TryGetProperty("path", out var pathProp) ? pathProp.GetString() : ".";
+                            return $"📁 Contenido de {path}:\n" + string.Join("\n", fileList.Take(20)) +
+                                   (fileList.Count > 20 ? $"\n... y {fileList.Count - 20} más" : "");
+                        }
+                    }
 
-                    return $"Encontré {fileList.Count} elementos:\n" +
-                           string.Join("\n", fileList.Take(10)) +
-                           (fileList.Count > 10 ? $"\n... y {fileList.Count - 10} más" : "");
+                    // Formatear resultados de búsqueda
+                    if (data.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
+                    {
+                        var resultList = new List<string>();
+                        foreach (var item in results.EnumerateArray())
+                        {
+                            if (item.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                            {
+                                resultList.Add($"📄 {name.GetString()}");
+                            }
+                            else if (item.TryGetProperty("path", out var path) && path.ValueKind == JsonValueKind.String)
+                            {
+                                resultList.Add($"📄 {Path.GetFileName(path.GetString())}");
+                            }
+                        }
+                        
+                        if (resultList.Count > 0)
+                        {
+                            return $"🔍 Encontré {resultList.Count} resultados:\n" + string.Join("\n", resultList.Take(10)) +
+                                   (resultList.Count > 10 ? $"\n... y {resultList.Count - 10} más" : "");
+                        }
+                    }
+
+                    return "✅ Operación completada exitosamente";
                 }
-
-                return "Operación completada exitosamente.";
             }
 
             if (doc.RootElement.TryGetProperty("error", out var error))
             {
-                return $"Error: {error.GetString()}";
+                return $"❌ Error: {error.GetString()}";
             }
         }
         catch
@@ -386,7 +538,20 @@ internal sealed class Agent
             // Si no se puede parsear, devolver el resultado original
         }
 
-        return result.Length > 200 ? result.Substring(0, 200) + "..." : result;
+        return result.Length > 300 ? result.Substring(0, 300) + "..." : result;
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        string[] sizes = { "B", "KB", "MB", "GB" };
+        int order = 0;
+        double len = bytes;
+        while (len >= 1024 && order < sizes.Length - 1)
+        {
+            order++;
+            len = len / 1024;
+        }
+        return $"{len:0.##} {sizes[order]}";
     }
 
     private ReasoningStep ParseReasoningResponse(string response)
@@ -402,19 +567,29 @@ internal sealed class Agent
                 var doc = JsonDocument.Parse(json);
                 var root = doc.RootElement;
 
+                JsonElement toolArgs;
+                if (root.TryGetProperty("tool_arguments", out var args) && args.ValueKind == JsonValueKind.Object)
+                {
+                    toolArgs = args.Clone();
+                }
+                else
+                {
+                    toolArgs = JsonDocument.Parse("{}").RootElement;
+                }
+
                 return new ReasoningStep
                 {
-                    Thought = root.TryGetProperty("thought", out var thought) ? thought.GetString() ?? "Pensando..." : "Pensando...",
+                    Thought = root.TryGetProperty("thought", out var thought) ? thought.GetString() ?? "Analizando..." : "Analizando...",
                     Action = root.TryGetProperty("action", out var action) ? action.GetString() ?? "" : "",
                     ToolName = root.TryGetProperty("tool_name", out var tool) ? tool.GetString() : null,
-                    ToolArguments = root.TryGetProperty("tool_arguments", out var args) ? args.Clone() : JsonDocument.Parse("{}").RootElement
+                    ToolArguments = toolArgs
                 };
             }
         }
         catch (JsonException)
         {
             // Si no es JSON válido, buscar patrones simples
-            if (response.Contains("list_directory") || response.ToLower().Contains("listar"))
+            if (response.ToLower().Contains("listar") || response.ToLower().Contains("archivos") || response.ToLower().Contains("directory"))
             {
                 return new ReasoningStep
                 {
@@ -426,67 +601,32 @@ internal sealed class Agent
             }
         }
 
-        // Fallback total
+        // Fallback a exploración
         return new ReasoningStep
         {
-            Thought = response.Length > 100 ? response.Substring(0, 100) + "..." : response,
-            Action = "Acción por defecto",
+            Thought = "No pude entender claramente, voy a explorar el entorno",
+            Action = "Listando directorio actual para entender el contexto",
             ToolName = "list_directory",
             ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
         };
     }
 }
 
-// Session de Reasoning
-internal sealed class ReasoningSession
-{
-    public string OriginalInput { get; }
-    public List<ReasoningStep> Steps { get; } = new();
-    public AgentContext Context { get; }
-
-    public ReasoningSession(string input, AgentContext context)
-    {
-        OriginalInput = input;
-        Context = context;
-    }
-
-    public void AddStep(ReasoningStep step, string observation)
-    {
-        step.Observation = observation;
-        Steps.Add(step);
-    }
-
-    public void AddObservation(string observation)
-    {
-        if (Steps.Count > 0)
-        {
-            Steps[^1].Observation = observation;
-        }
-    }
-}
-
 internal record ReasoningStep
 {
     public string Thought { get; set; } = string.Empty;
-    public bool IsComplete { get; set; }
     public string Action { get; set; } = string.Empty;
     public string? ToolName { get; set; }
     public JsonElement? ToolArguments { get; set; }
-    public string Observation { get; set; } = string.Empty;
 }
 
-// Contexto del Agente
 internal sealed class AgentContext
 {
     public string CurrentDirectory { get; set; } = Directory.GetCurrentDirectory();
     public string? CurrentDatabase { get; set; }
     public string? DatabaseConnectionString { get; set; }
-    public List<string> RecentFiles { get; } = new();
-    public Stack<string> DirectoryStack { get; } = new();
-    public Dictionary<string, string> EnvironmentVars { get; } = new();
 }
 
-// ✅ NUEVO: Cliente LM Studio con Completions API
 internal sealed class LmStudioClient
 {
     private readonly HttpClient _http;
@@ -535,11 +675,11 @@ internal sealed class LmStudioClient
         }
     }
 
-    // ✅ NUEVO: Usar Completions API en lugar de Chat Completions
-    public async Task<CompletionResponse> CreateCompletionAsync(CompletionRequest request, CancellationToken cancellationToken)
+    // ✅ CHAT COMPLETIONS API (compatible con tu modelo)
+    public async Task<ChatCompletionResponse> CreateChatCompletionAsync(ChatCompletionRequest request, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(request, _jsonOptions);
-        var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/completions")
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
         };
@@ -550,49 +690,48 @@ internal sealed class LmStudioClient
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"LLM error: {(int)response.StatusCode} - {raw}");
 
-        var completion = JsonSerializer.Deserialize<CompletionResponse>(raw, _jsonOptions);
+        var completion = JsonSerializer.Deserialize<ChatCompletionResponse>(raw, _jsonOptions);
         return completion ?? throw new InvalidOperationException("Respuesta del LLM vacía o inválida.");
     }
 }
 
-// ✅ NUEVOS RECORDS para Completions API
-internal record CompletionRequest
+internal record ChatCompletionRequest
 {
     [JsonPropertyName("model")]
     public required string Model { get; init; }
 
-    [JsonPropertyName("prompt")]
-    public required string Prompt { get; init; }
+    [JsonPropertyName("messages")]
+    public required List<ChatMessage> Messages { get; init; }
 
     [JsonPropertyName("temperature")]
     public double Temperature { get; init; } = 0.1;
 
     [JsonPropertyName("max_tokens")]
     public int? MaxTokens { get; init; }
-
-    [JsonPropertyName("stop")]
-    public List<string>? Stop { get; init; } = new() { "\n", "```" };
 }
 
-internal record CompletionResponse
+internal record ChatCompletionResponse
 {
     [JsonPropertyName("choices")]
-    public required List<CompletionChoice> Choices { get; init; }
+    public required List<ChatChoice> Choices { get; init; }
 }
 
-internal record CompletionChoice
+internal record ChatChoice
 {
-    [JsonPropertyName("text")]
-    public required string Text { get; init; }
+    [JsonPropertyName("message")]
+    public required ChatMessage Message { get; init; }
 }
 
-// UI Mejorada
+internal record ChatMessage(
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("content")] string Content);
+
 internal static class Ui
 {
     public static void Banner(string modelId, string baseUrl)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
-        Console.WriteLine("🚀 Agente CLI Avanzado (Claude/Codex Style)");
+        Console.WriteLine("🚀 Agente CLI Avanzado");
         Console.ResetColor();
         Console.WriteLine($"Modelo: {modelId}");
         Console.WriteLine($"Endpoint: {baseUrl}");
@@ -701,7 +840,6 @@ internal static class Ui
     }
 }
 
-// Registry de Herramientas Completas
 internal static class ToolRegistry
 {
     public static IReadOnlyList<ITool> Create(string? dbConnectionString)
@@ -727,12 +865,32 @@ internal static class ToolRegistry
     }
 }
 
-// Interfaces y herramientas base
 internal interface ITool
 {
     string Name { get; }
     ToolDefinition Definition { get; }
     Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default);
+}
+
+internal record ToolDefinition
+{
+    [JsonPropertyName("type")]
+    public string Type { get; init; } = "function";
+
+    [JsonPropertyName("function")]
+    public required ToolFunction Function { get; init; }
+}
+
+internal record ToolFunction
+{
+    [JsonPropertyName("name")]
+    public required string Name { get; init; }
+
+    [JsonPropertyName("description")]
+    public required string Description { get; init; }
+
+    [JsonPropertyName("parameters")]
+    public required object Parameters { get; init; }
 }
 
 internal static class ToolHelpers
@@ -792,7 +950,6 @@ internal static class ToolResult
         JsonSerializer.Serialize(new { ok = false, error = message }, Options);
 }
 
-// Implementaciones de herramientas específicas
 internal sealed class ReadFileTool : ITool
 {
     public string Name => "read_file";
@@ -808,8 +965,7 @@ internal sealed class ReadFileTool : ITool
                 type = "object",
                 properties = new
                 {
-                    path = new { type = "string", description = "Ruta del archivo" },
-                    encoding = new { type = "string", description = "Codificación (utf-8, ascii, etc.)" }
+                    path = new { type = "string", description = "Ruta del archivo" }
                 },
                 required = new[] { "path" }
             }
@@ -827,8 +983,7 @@ internal sealed class ReadFileTool : ITool
 
         try
         {
-            var encoding = GetEncoding(ToolHelpers.GetString(arguments, "encoding"));
-            var content = await File.ReadAllTextAsync(path, encoding, cancellationToken);
+            var content = await File.ReadAllTextAsync(path, cancellationToken);
             return ToolResult.Success(new { path, content, size = content.Length });
         }
         catch (Exception ex)
@@ -836,14 +991,6 @@ internal sealed class ReadFileTool : ITool
             return ToolResult.Error($"Error leyendo archivo: {ex.Message}");
         }
     }
-
-    private static Encoding GetEncoding(string? encoding) => encoding?.ToLowerInvariant() switch
-    {
-        "utf-8" => Encoding.UTF8,
-        "ascii" => Encoding.ASCII,
-        "unicode" => Encoding.Unicode,
-        _ => Encoding.UTF8
-    };
 }
 
 internal sealed class WriteFileTool : ITool
@@ -862,9 +1009,7 @@ internal sealed class WriteFileTool : ITool
                 properties = new
                 {
                     path = new { type = "string", description = "Ruta del archivo" },
-                    content = new { type = "string", description = "Contenido a escribir" },
-                    append = new { type = "boolean", description = "Agregar al final" },
-                    encoding = new { type = "string", description = "Codificación" }
+                    content = new { type = "string", description = "Contenido a escribir" }
                 },
                 required = new[] { "path", "content" }
             }
@@ -875,7 +1020,6 @@ internal sealed class WriteFileTool : ITool
     {
         var path = ToolHelpers.GetString(arguments, "path");
         var content = ToolHelpers.GetString(arguments, "content");
-        var append = ToolHelpers.GetBool(arguments, "append");
 
         if (string.IsNullOrWhiteSpace(path))
             return ToolResult.Error("Falta el parámetro 'path'");
@@ -886,27 +1030,14 @@ internal sealed class WriteFileTool : ITool
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 Directory.CreateDirectory(directory);
 
-            var encoding = GetEncoding(ToolHelpers.GetString(arguments, "encoding"));
-            if (append)
-                await File.AppendAllTextAsync(path, content, encoding, cancellationToken);
-            else
-                await File.WriteAllTextAsync(path, content, encoding, cancellationToken);
-
-            return ToolResult.Success(new { path, action = append ? "append" : "write" });
+            await File.WriteAllTextAsync(path, content ?? "", cancellationToken);
+            return ToolResult.Success(new { path, action = "write" });
         }
         catch (Exception ex)
         {
             return ToolResult.Error($"Error escribiendo archivo: {ex.Message}");
         }
     }
-
-    private static Encoding GetEncoding(string? encoding) => encoding?.ToLowerInvariant() switch
-    {
-        "utf-8" => Encoding.UTF8,
-        "ascii" => Encoding.ASCII,
-        "unicode" => Encoding.Unicode,
-        _ => Encoding.UTF8
-    };
 }
 
 internal sealed class ListDirectoryTool : ITool
@@ -924,9 +1055,7 @@ internal sealed class ListDirectoryTool : ITool
                 type = "object",
                 properties = new
                 {
-                    path = new { type = "string", description = "Ruta del directorio" },
-                    recursive = new { type = "boolean", description = "Búsqueda recursiva" },
-                    pattern = new { type = "string", description = "Patrón de búsqueda" }
+                    path = new { type = "string", description = "Ruta del directorio" }
                 }
             }
         }
@@ -935,18 +1064,13 @@ internal sealed class ListDirectoryTool : ITool
     public Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
         var path = ToolHelpers.GetString(arguments, "path") ?? ".";
-        var recursive = ToolHelpers.GetBool(arguments, "recursive");
-        var pattern = ToolHelpers.GetString(arguments, "pattern") ?? "*";
 
         if (!Directory.Exists(path))
             return Task.FromResult(ToolResult.Error($"Directorio no encontrado: {path}"));
 
         try
         {
-            var options = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-
-            // Crear una lista de archivos
-            var files = Directory.EnumerateFiles(path, pattern, options)
+            var files = Directory.EnumerateFiles(path)
                 .Select(f => new {
                     name = Path.GetFileName(f),
                     path = f,
@@ -954,16 +1078,14 @@ internal sealed class ListDirectoryTool : ITool
                     size = new FileInfo(f).Length
                 }).ToList();
 
-            // Crear una lista de directorios
-            var directories = Directory.EnumerateDirectories(path, "*", SearchOption.TopDirectoryOnly)
+            var directories = Directory.EnumerateDirectories(path)
                 .Select(d => new {
                     name = Path.GetFileName(d),
                     path = d,
                     type = "directory",
-                    size = 0L // Agregar tamaño 0 para directorios
+                    size = 0L
                 }).ToList();
 
-            // Combinar ambas listas
             var items = files.Concat(directories).ToList();
 
             return Task.FromResult(ToolResult.Success(new { path, items }));
@@ -984,16 +1106,14 @@ internal sealed class SearchFilesTool : ITool
         Function = new ToolFunction
         {
             Name = "search_files",
-            Description = "Busca archivos por contenido o nombre",
+            Description = "Busca archivos por nombre",
             Parameters = new
             {
                 type = "object",
                 properties = new
                 {
                     path = new { type = "string", description = "Ruta de búsqueda" },
-                    pattern = new { type = "string", description = "Patrón de nombre" },
-                    content = new { type = "string", description = "Texto a buscar en contenido" },
-                    recursive = new { type = "boolean", description = "Búsqueda recursiva" }
+                    pattern = new { type = "string", description = "Patrón de nombre" }
                 }
             }
         }
@@ -1003,42 +1123,21 @@ internal sealed class SearchFilesTool : ITool
     {
         var path = ToolHelpers.GetString(arguments, "path") ?? ".";
         var pattern = ToolHelpers.GetString(arguments, "pattern") ?? "*";
-        var content = ToolHelpers.GetString(arguments, "content");
-        var recursive = ToolHelpers.GetBool(arguments, "recursive");
 
         if (!Directory.Exists(path))
             return Task.FromResult(ToolResult.Error($"Directorio no encontrado: {path}"));
 
         try
         {
-            var options = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var files = Directory.EnumerateFiles(path, pattern, options);
-
-            if (!string.IsNullOrEmpty(content))
-            {
-                files = files.Where(f =>
+            var files = Directory.EnumerateFiles(path, pattern, SearchOption.AllDirectories)
+                .Select(f => new
                 {
-                    try
-                    {
-                        var fileContent = File.ReadAllText(f);
-                        return fileContent.Contains(content, StringComparison.OrdinalIgnoreCase);
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                });
-            }
+                    path = f,
+                    name = Path.GetFileName(f),
+                    size = new FileInfo(f).Length
+                }).ToList();
 
-            var results = files.Select(f => new
-            {
-                path = f,
-                name = Path.GetFileName(f),
-                size = new FileInfo(f).Length,
-                modified = File.GetLastWriteTime(f)
-            }).ToList();
-
-            return Task.FromResult(ToolResult.Success(new { path, pattern, content, results }));
+            return Task.FromResult(ToolResult.Success(new { path, pattern, results = files }));
         }
         catch (Exception ex)
         {
@@ -1056,14 +1155,13 @@ internal sealed class RunShellTool : ITool
         Function = new ToolFunction
         {
             Name = "run_shell_command",
-            Description = "Ejecuta comandos de shell (PowerShell/Bash)",
+            Description = "Ejecuta comandos de shell",
             Parameters = new
             {
                 type = "object",
                 properties = new
                 {
-                    command = new { type = "string", description = "Comando a ejecutar" },
-                    working_directory = new { type = "string", description = "Directorio de trabajo" }
+                    command = new { type = "string", description = "Comando a ejecutar" }
                 },
                 required = new[] { "command" }
             }
@@ -1073,7 +1171,6 @@ internal sealed class RunShellTool : ITool
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
         var command = ToolHelpers.GetString(arguments, "command");
-        var workingDir = ToolHelpers.GetString(arguments, "working_directory");
 
         if (string.IsNullOrWhiteSpace(command))
             return ToolResult.Error("Falta el parámetro 'command'");
@@ -1081,13 +1178,12 @@ internal sealed class RunShellTool : ITool
         try
         {
             var fileName = OperatingSystem.IsWindows() ? "powershell.exe" : "/bin/bash";
-            var args = OperatingSystem.IsWindows() ? $"-NoProfile -Command \"{command}\"" : $"-c \"{command}\"";
+            var args = OperatingSystem.IsWindows() ? $"-Command \"{command}\"" : $"-c \"{command}\"";
 
             var startInfo = new ProcessStartInfo
             {
                 FileName = fileName,
                 Arguments = args,
-                WorkingDirectory = workingDir ?? Directory.GetCurrentDirectory(),
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -1119,9 +1215,7 @@ internal sealed class RunShellTool : ITool
 internal sealed class SqlCommandTool : ITool
 {
     private readonly string? _connectionString;
-
     public SqlCommandTool(string? connectionString) => _connectionString = connectionString;
-
     public string Name => "sql_command";
     public ToolDefinition Definition => new()
     {
@@ -1129,15 +1223,13 @@ internal sealed class SqlCommandTool : ITool
         Function = new ToolFunction
         {
             Name = "sql_command",
-            Description = "Ejecuta comandos SQL en la base de datos",
+            Description = "Ejecuta SQL en base de datos",
             Parameters = new
             {
                 type = "object",
                 properties = new
                 {
-                    database = new { type = "string", description = "Nombre de la base de datos" },
-                    sql = new { type = "string", description = "Comando SQL a ejecutar" },
-                    parameters = new { type = "object", description = "Parámetros para el comando" }
+                    sql = new { type = "string", description = "Comando SQL" }
                 },
                 required = new[] { "sql" }
             }
@@ -1150,8 +1242,6 @@ internal sealed class SqlCommandTool : ITool
             return ToolResult.Error("Cadena de conexión no configurada");
 
         var sql = ToolHelpers.GetString(arguments, "sql");
-        var database = ToolHelpers.GetString(arguments, "database");
-
         if (string.IsNullOrWhiteSpace(sql))
             return ToolResult.Error("Falta el parámetro 'sql'");
 
@@ -1159,24 +1249,9 @@ internal sealed class SqlCommandTool : ITool
         {
             await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-
-            if (!string.IsNullOrWhiteSpace(database))
-            {
-                await using var useDb = new SqlCommand($"USE [{database}]", connection);
-                await useDb.ExecuteNonQueryAsync(cancellationToken);
-            }
-
+            
             await using var command = new SqlCommand(sql, connection);
-
-            // Agregar parámetros si existen
-            if (arguments.TryGetProperty("parameters", out var paramsElement) && paramsElement.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var param in paramsElement.EnumerateObject())
-                {
-                    command.Parameters.AddWithValue(param.Name, param.Value.ToString() ?? "");
-                }
-            }
-
+            
             if (sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
             {
                 await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -1191,7 +1266,6 @@ internal sealed class SqlCommandTool : ITool
                     }
                     results.Add(row);
                 }
-
                 return ToolResult.Success(new { rows = results, count = results.Count });
             }
             else
@@ -1210,9 +1284,7 @@ internal sealed class SqlCommandTool : ITool
 internal sealed class ListDatabasesTool : ITool
 {
     private readonly string? _connectionString;
-
     public ListDatabasesTool(string? connectionString) => _connectionString = connectionString;
-
     public string Name => "list_databases";
     public ToolDefinition Definition => new()
     {
@@ -1220,7 +1292,7 @@ internal sealed class ListDatabasesTool : ITool
         Function = new ToolFunction
         {
             Name = "list_databases",
-            Description = "Lista todas las bases de datos disponibles",
+            Description = "Lista bases de datos",
             Parameters = new { type = "object", properties = new { } }
         }
     };
@@ -1234,7 +1306,6 @@ internal sealed class ListDatabasesTool : ITool
         {
             await using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
-
             await using var command = new SqlCommand("SELECT name FROM sys.databases WHERE state = 0 ORDER BY name", connection);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken);
 
@@ -1243,7 +1314,6 @@ internal sealed class ListDatabasesTool : ITool
             {
                 databases.Add(reader.GetString(0));
             }
-
             return ToolResult.Success(new { databases });
         }
         catch (Exception ex)
@@ -1256,9 +1326,7 @@ internal sealed class ListDatabasesTool : ITool
 internal sealed class ListTablesTool : ITool
 {
     private readonly string? _connectionString;
-
     public ListTablesTool(string? connectionString) => _connectionString = connectionString;
-
     public string Name => "list_tables";
     public ToolDefinition Definition => new()
     {
@@ -1266,13 +1334,13 @@ internal sealed class ListTablesTool : ITool
         Function = new ToolFunction
         {
             Name = "list_tables",
-            Description = "Lista tablas en una base de datos",
+            Description = "Lista tablas en base de datos",
             Parameters = new
             {
                 type = "object",
                 properties = new
                 {
-                    database = new { type = "string", description = "Nombre de la base de datos" }
+                    database = new { type = "string", description = "Nombre de base de datos" }
                 }
             }
         }
@@ -1284,7 +1352,6 @@ internal sealed class ListTablesTool : ITool
             return ToolResult.Error("Cadena de conexión no configurada");
 
         var database = ToolHelpers.GetString(arguments, "database");
-
         try
         {
             await using var connection = new SqlConnection(_connectionString);
@@ -1313,7 +1380,6 @@ internal sealed class ListTablesTool : ITool
                     type = reader.GetString(2)
                 });
             }
-
             return ToolResult.Success(new { database = database ?? "(actual)", tables });
         }
         catch (Exception ex)
@@ -1326,9 +1392,7 @@ internal sealed class ListTablesTool : ITool
 internal sealed class HttpRequestTool : ITool
 {
     private readonly HttpClient _http;
-
     public HttpRequestTool(HttpClient http) => _http = http;
-
     public string Name => "http_request";
     public ToolDefinition Definition => new()
     {
@@ -1342,10 +1406,7 @@ internal sealed class HttpRequestTool : ITool
                 type = "object",
                 properties = new
                 {
-                    method = new { type = "string", description = "Método HTTP", @enum = new[] { "GET", "POST", "PUT", "DELETE", "PATCH" } },
-                    url = new { type = "string", description = "URL destino" },
-                    headers = new { type = "object", description = "Headers HTTP" },
-                    body = new { type = "string", description = "Cuerpo de la petición" }
+                    url = new { type = "string", description = "URL destino" }
                 },
                 required = new[] { "url" }
             }
@@ -1354,39 +1415,17 @@ internal sealed class HttpRequestTool : ITool
 
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
-        var method = ToolHelpers.GetString(arguments, "method") ?? "GET";
         var url = ToolHelpers.GetString(arguments, "url");
-        var body = ToolHelpers.GetString(arguments, "body");
-
         if (string.IsNullOrWhiteSpace(url))
             return ToolResult.Error("Falta el parámetro 'url'");
 
         try
         {
-            using var request = new HttpRequestMessage(new HttpMethod(method), url);
-
-            // Headers
-            if (arguments.TryGetProperty("headers", out var headers) && headers.ValueKind == JsonValueKind.Object)
-            {
-                foreach (var header in headers.EnumerateObject())
-                {
-                    request.Headers.TryAddWithoutValidation(header.Name, header.Value.GetString());
-                }
-            }
-
-            // Body
-            if (!string.IsNullOrWhiteSpace(body))
-            {
-                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
-            }
-
-            var response = await _http.SendAsync(request, cancellationToken);
+            var response = await _http.GetAsync(url, cancellationToken);
             var content = await response.Content.ReadAsStringAsync(cancellationToken);
-
             return ToolResult.Success(new
             {
                 status = (int)response.StatusCode,
-                headers = response.Headers.ToDictionary(h => h.Key, h => string.Join(", ", h.Value)),
                 content
             });
         }
@@ -1400,9 +1439,7 @@ internal sealed class HttpRequestTool : ITool
 internal sealed class WebSearchTool : ITool
 {
     private readonly HttpClient _http;
-
     public WebSearchTool(HttpClient http) => _http = http;
-
     public string Name => "web_search";
     public ToolDefinition Definition => new()
     {
@@ -1410,14 +1447,13 @@ internal sealed class WebSearchTool : ITool
         Function = new ToolFunction
         {
             Name = "web_search",
-            Description = "Busca información en la web (usando DuckDuckGo u otros)",
+            Description = "Busca en la web",
             Parameters = new
             {
                 type = "object",
                 properties = new
                 {
-                    query = new { type = "string", description = "Término de búsqueda" },
-                    max_results = new { type = "number", description = "Número máximo de resultados" }
+                    query = new { type = "string", description = "Término de búsqueda" }
                 },
                 required = new[] { "query" }
             }
@@ -1427,59 +1463,20 @@ internal sealed class WebSearchTool : ITool
     public async Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
         var query = ToolHelpers.GetString(arguments, "query");
-        var maxResults = ToolHelpers.GetInt(arguments, "max_results") ?? 5;
-
         if (string.IsNullOrWhiteSpace(query))
             return ToolResult.Error("Falta el parámetro 'query'");
 
         try
         {
-            // Usar DuckDuckGo Instant Answer API
             var url = $"https://api.duckduckgo.com/?q={Uri.EscapeDataString(query)}&format=json&no_html=1";
-
             var response = await _http.GetStringAsync(url);
-            var result = JsonSerializer.Deserialize<DuckDuckGoResponse>(response);
-
-            var results = new List<object>();
-
-            if (!string.IsNullOrEmpty(result?.AbstractText))
-            {
-                results.Add(new
-                {
-                    title = result.Heading ?? "Resumen",
-                    content = result.AbstractText,
-                    url = result.AbstractURL
-                });
-            }
-
-            if (result?.RelatedTopics != null)
-            {
-                results.AddRange(result.RelatedTopics
-                    .Where(t => !string.IsNullOrEmpty(t.Text))
-                    .Take(maxResults - 1)
-                    .Select(t => new
-                    {
-                        title = t.Text?.Split(' ').Take(5).Aggregate((a, b) => a + " " + b) ?? "Resultado",
-                        content = t.Text,
-                        url = t.FirstURL
-                    }));
-            }
-
-            return ToolResult.Success(new { query, results });
+            return ToolResult.Success(new { query, response });
         }
         catch (Exception ex)
         {
             return ToolResult.Error($"Error en búsqueda web: {ex.Message}");
         }
     }
-
-    private record DuckDuckGoResponse(
-        string? AbstractText,
-        string? AbstractURL,
-        string? Heading,
-        List<DuckDuckGoTopic>? RelatedTopics);
-
-    private record DuckDuckGoTopic(string? Text, string? FirstURL);
 }
 
 internal sealed class ListProcessesTool : ITool
@@ -1492,34 +1489,22 @@ internal sealed class ListProcessesTool : ITool
         {
             Name = "list_processes",
             Description = "Lista procesos en ejecución",
-            Parameters = new
-            {
-                type = "object",
-                properties = new
-                {
-                    name = new { type = "string", description = "Filtrar por nombre" }
-                }
-            }
+            Parameters = new { type = "object", properties = new { } }
         }
     };
 
     public Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
-        var nameFilter = ToolHelpers.GetString(arguments, "name");
-
         try
         {
             var processes = Process.GetProcesses()
-                .Where(p => string.IsNullOrEmpty(nameFilter) ||
-                           p.ProcessName.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(p => p.WorkingSet64)
-                .Take(50)
+                .Take(20)
                 .Select(p => new
                 {
                     id = p.Id,
                     name = p.ProcessName,
-                    memory = p.WorkingSet64 / 1024 / 1024,
-                    startTime = TryGetStartTime(p)
+                    memory = p.WorkingSet64 / 1024 / 1024
                 })
                 .ToList();
 
@@ -1529,12 +1514,6 @@ internal sealed class ListProcessesTool : ITool
         {
             return Task.FromResult(ToolResult.Error($"Error listando procesos: {ex.Message}"));
         }
-    }
-
-    private static string? TryGetStartTime(Process process)
-    {
-        try { return process.StartTime.ToString("yyyy-MM-dd HH:mm:ss"); }
-        catch { return null; }
     }
 }
 
@@ -1595,8 +1574,7 @@ internal sealed class AnalyzeCodeTool : ITool
                 type = "object",
                 properties = new
                 {
-                    path = new { type = "string", description = "Ruta del directorio o archivo" },
-                    language = new { type = "string", description = "Lenguaje de programación" }
+                    path = new { type = "string", description = "Ruta del directorio o archivo" }
                 }
             }
         }
@@ -1605,14 +1583,30 @@ internal sealed class AnalyzeCodeTool : ITool
     public Task<string> ExecuteAsync(JsonElement arguments, CancellationToken cancellationToken = default)
     {
         var path = ToolHelpers.GetString(arguments, "path") ?? ".";
-        var language = ToolHelpers.GetString(arguments, "language");
 
         try
         {
-            var codeFiles = GetCodeFiles(path, language);
-            var analysis = AnalyzeCodeStructure(codeFiles);
+            var codeFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
+                .Where(f => IsCodeFile(f))
+                .Take(50)
+                .ToList();
 
-            return Task.FromResult(ToolResult.Success(new { path, language, analysis }));
+            var analysis = new
+            {
+                totalFiles = codeFiles.Count,
+                fileTypes = codeFiles.GroupBy(Path.GetExtension)
+                    .ToDictionary(g => g.Key ?? "sin extensión", g => g.Count()),
+                largestFiles = codeFiles.Select(f => new
+                {
+                    file = f,
+                    size = new FileInfo(f).Length
+                })
+                .OrderByDescending(f => f.size)
+                .Take(5)
+                .ToList()
+            };
+
+            return Task.FromResult(ToolResult.Success(new { path, analysis }));
         }
         catch (Exception ex)
         {
@@ -1620,42 +1614,10 @@ internal sealed class AnalyzeCodeTool : ITool
         }
     }
 
-    private static List<string> GetCodeFiles(string path, string? language)
+    private static bool IsCodeFile(string filePath)
     {
-        var patterns = language?.ToLowerInvariant() switch
-        {
-            "c#" => new[] { "*.cs" },
-            "python" => new[] { "*.py" },
-            "javascript" => new[] { "*.js", "*.ts", "*.jsx", "*.tsx" },
-            "java" => new[] { "*.java" },
-            "php" => new[] { "*.php" },
-            "ruby" => new[] { "*.rb" },
-            "go" => new[] { "*.go" },
-            "rust" => new[] { "*.rs" },
-            _ => new[] { "*.cs", "*.py", "*.js", "*.ts", "*.java", "*.php", "*.rb", "*.go", "*.rs", "*.cpp", "*.h", "*.c", "*.hpp" }
-        };
-
-        return patterns.SelectMany(pattern =>
-            Directory.EnumerateFiles(path, pattern, SearchOption.AllDirectories))
-            .Take(100) // Limitar para no sobrecargar
-            .ToList();
-    }
-
-    private static object AnalyzeCodeStructure(List<string> files)
-    {
-        return new
-        {
-            totalFiles = files.Count,
-            fileTypes = files.GroupBy(Path.GetExtension)
-                .ToDictionary(g => g.Key, g => g.Count()),
-            largestFiles = files.Select(f => new {
-                file = f,
-                size = new FileInfo(f).Length
-            })
-            .OrderByDescending(f => f.size)
-            .Take(10)
-            .ToList()
-        };
+        var extensions = new[] { ".cs", ".js", ".ts", ".py", ".java", ".cpp", ".c", ".h", ".html", ".css", ".xml", ".json", ".sql" };
+        return extensions.Contains(Path.GetExtension(filePath).ToLowerInvariant());
     }
 }
 
@@ -1675,8 +1637,7 @@ internal sealed class SearchCodeTool : ITool
                 properties = new
                 {
                     path = new { type = "string", description = "Ruta de búsqueda" },
-                    pattern = new { type = "string", description = "Texto o patrón a buscar" },
-                    file_types = new { type = "string", description = "Tipos de archivo" }
+                    pattern = new { type = "string", description = "Texto a buscar" }
                 },
                 required = new[] { "pattern" }
             }
@@ -1687,34 +1648,30 @@ internal sealed class SearchCodeTool : ITool
     {
         var path = ToolHelpers.GetString(arguments, "path") ?? ".";
         var pattern = ToolHelpers.GetString(arguments, "pattern");
-        var fileTypes = ToolHelpers.GetString(arguments, "file_types");
 
         if (string.IsNullOrWhiteSpace(pattern))
             return Task.FromResult(ToolResult.Error("Falta el parámetro 'pattern'"));
 
         try
         {
-            var codeFiles = GetCodeFiles(path, fileTypes);
+            var codeFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
+                .Where(f => IsCodeFile(f))
+                .Take(100)
+                .ToList();
+
             var results = new List<object>();
 
-            foreach (var file in codeFiles.Take(50)) // Limitar búsqueda
+            foreach (var file in codeFiles)
             {
                 try
                 {
                     var content = File.ReadAllText(file);
                     if (content.Contains(pattern, StringComparison.OrdinalIgnoreCase))
                     {
-                        var lines = content.Split('\n')
-                            .Select((line, index) => new { line, number = index + 1 })
-                            .Where(l => l.line.Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                            .Take(5)
-                            .ToList();
-
                         results.Add(new
                         {
                             file,
-                            matches = lines.Count,
-                            snippets = lines.Select(l => new { line = l.number, text = l.line.Trim() })
+                            matches = 1
                         });
                     }
                 }
@@ -1732,21 +1689,13 @@ internal sealed class SearchCodeTool : ITool
         }
     }
 
-    private static List<string> GetCodeFiles(string path, string? fileTypes)
+    private static bool IsCodeFile(string filePath)
     {
-        var patterns = string.IsNullOrEmpty(fileTypes)
-            ? new[] { "*.cs", "*.py", "*.js", "*.ts", "*.java", "*.php", "*.rb", "*.go", "*.rs", "*.cpp", "*.h", "*.c", "*.hpp", "*.html", "*.css", "*.xml", "*.json" }
-            : fileTypes.Split(',').Select(ft => ft.Trim().StartsWith("*") ? ft.Trim() : $"*.{ft.Trim()}").ToArray();
-
-        return patterns.SelectMany(pattern =>
-            Directory.EnumerateFiles(path, pattern, SearchOption.AllDirectories))
-            .Distinct()
-            .Take(200) // Limitar para no sobrecargar
-            .ToList();
+        var extensions = new[] { ".cs", ".js", ".ts", ".py", ".java", ".cpp", ".c", ".h", ".html", ".css", ".xml", ".json", ".sql" };
+        return extensions.Contains(Path.GetExtension(filePath).ToLowerInvariant());
     }
 }
 
-// Configuración de base de datos
 internal static class DbConfig
 {
     public static string? ResolveConnectionString(string? envConn)
@@ -1778,28 +1727,4 @@ internal static class DbConfig
 
         return envConn;
     }
-}
-
-// ❌ ELIMINADO: Todos los records de Chat Completions
-// ✅ MANTENIDO: Solo los records de Completions API
-
-internal record ToolDefinition
-{
-    [JsonPropertyName("type")]
-    public string Type { get; init; } = "function";
-
-    [JsonPropertyName("function")]
-    public required ToolFunction Function { get; init; }
-}
-
-internal record ToolFunction
-{
-    [JsonPropertyName("name")]
-    public required string Name { get; init; }
-
-    [JsonPropertyName("description")]
-    public required string Description { get; init; }
-
-    [JsonPropertyName("parameters")]
-    public required object Parameters { get; init; }
 }
