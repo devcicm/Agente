@@ -501,7 +501,7 @@ internal sealed class Agent
                         }
                     }
 
-                    // Formatear resultados de búsqueda
+                    // Formatear resultados de búsqueda de archivos
                     if (data.TryGetProperty("results", out var results) && results.ValueKind == JsonValueKind.Array)
                     {
                         var resultList = new List<string>();
@@ -516,12 +516,55 @@ internal sealed class Agent
                                 resultList.Add($"📄 {Path.GetFileName(path.GetString())}");
                             }
                         }
-                        
+
                         if (resultList.Count > 0)
                         {
                             return $"🔍 Encontré {resultList.Count} resultados:\n" + string.Join("\n", resultList.Take(10)) +
                                    (resultList.Count > 10 ? $"\n... y {resultList.Count - 10} más" : "");
                         }
+                    }
+
+                    // Formatear resultados de búsqueda web
+                    if (data.TryGetProperty("query", out var query))
+                    {
+                        var output = new List<string>();
+
+                        if (data.TryGetProperty("heading", out var heading) && !string.IsNullOrWhiteSpace(heading.GetString()))
+                        {
+                            output.Add($"📌 {heading.GetString()}");
+                            output.Add("");
+                        }
+
+                        if (data.TryGetProperty("abstract", out var abstractProp) && !string.IsNullOrWhiteSpace(abstractProp.GetString()))
+                        {
+                            output.Add($"ℹ️  {abstractProp.GetString()}");
+
+                            if (data.TryGetProperty("url", out var url) && !string.IsNullOrWhiteSpace(url.GetString()))
+                            {
+                                output.Add($"🔗 Más información: {url.GetString()}");
+                            }
+                            output.Add("");
+                        }
+
+                        if (data.TryGetProperty("related_topics", out var topics) && topics.ValueKind == JsonValueKind.Array)
+                        {
+                            output.Add("📚 Temas relacionados:");
+                            foreach (var topic in topics.EnumerateArray())
+                            {
+                                if (topic.TryGetProperty("text", out var text))
+                                {
+                                    output.Add($"  • {text.GetString()}");
+                                }
+                            }
+                        }
+
+                        if (data.TryGetProperty("message", out var message))
+                        {
+                            output.Add($"⚠️  {message.GetString()}");
+                        }
+
+                        if (output.Count > 0)
+                            return string.Join("\n", output);
                     }
 
                     return "✅ Operación completada exitosamente";
@@ -1469,8 +1512,59 @@ internal sealed class WebSearchTool : ITool
         try
         {
             var url = $"https://api.duckduckgo.com/?q={Uri.EscapeDataString(query)}&format=json&no_html=1";
-            var response = await _http.GetStringAsync(url);
-            return ToolResult.Success(new { query, response });
+            var responseText = await _http.GetStringAsync(url);
+
+            // Parsear respuesta de DuckDuckGo
+            using var doc = JsonDocument.Parse(responseText);
+            var root = doc.RootElement;
+
+            var result = new Dictionary<string, object>
+            {
+                ["query"] = query
+            };
+
+            // Extraer información útil
+            if (root.TryGetProperty("AbstractText", out var abstractText) && !string.IsNullOrWhiteSpace(abstractText.GetString()))
+            {
+                result["abstract"] = abstractText.GetString()!;
+                if (root.TryGetProperty("AbstractURL", out var abstractUrl))
+                    result["url"] = abstractUrl.GetString() ?? "";
+            }
+            else if (root.TryGetProperty("Abstract", out var abstractProp) && !string.IsNullOrWhiteSpace(abstractProp.GetString()))
+            {
+                result["abstract"] = abstractProp.GetString()!;
+            }
+
+            if (root.TryGetProperty("Heading", out var heading) && !string.IsNullOrWhiteSpace(heading.GetString()))
+            {
+                result["heading"] = heading.GetString()!;
+            }
+
+            // Extraer tópicos relacionados
+            if (root.TryGetProperty("RelatedTopics", out var relatedTopics) && relatedTopics.ValueKind == JsonValueKind.Array)
+            {
+                var topics = new List<Dictionary<string, string>>();
+                foreach (var topic in relatedTopics.EnumerateArray().Take(5))
+                {
+                    if (topic.TryGetProperty("Text", out var text) && !string.IsNullOrWhiteSpace(text.GetString()))
+                    {
+                        var topicDict = new Dictionary<string, string> { ["text"] = text.GetString()! };
+                        if (topic.TryGetProperty("FirstURL", out var firstUrl))
+                            topicDict["url"] = firstUrl.GetString() ?? "";
+                        topics.Add(topicDict);
+                    }
+                }
+                if (topics.Count > 0)
+                    result["related_topics"] = topics;
+            }
+
+            // Si no hay información, indicarlo
+            if (!result.ContainsKey("abstract") && !result.ContainsKey("related_topics"))
+            {
+                result["message"] = "No se encontró información en DuckDuckGo. Intenta reformular la pregunta o ser más específico.";
+            }
+
+            return ToolResult.Success(result);
         }
         catch (Exception ex)
         {
