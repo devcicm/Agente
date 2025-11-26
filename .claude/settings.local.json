@@ -1,11 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(dotnet build:*)",
-      "Bash(curl:*)",
-      "Bash(powershell -Command \"$body = Get-Content ''C:\\Users\\Carlos Ivan\\Desktop\\Agente\\test_lm.json'' -Raw; $response = Invoke-RestMethod -Uri ''http://localhost:1234/v1/chat/completions'' -Method Post -Body $body -ContentType ''application/json''; $response | ConvertTo-Json -Depth 10\")"
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(tasklist /FI \"PID eq 19708\" /FO LIST)",
+      "Bash(powershell -Command \"Get-Process -Id 19708 | Select-Object Name, Path, Id\")",
+      "Bash(python -m json.tool:*)"
     ],
     "deny": [],
     "ask": []

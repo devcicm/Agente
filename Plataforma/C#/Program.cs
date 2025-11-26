@@ -198,7 +198,7 @@ internal sealed class Agent
     {
         var prompt = BuildReasoningPrompt(userInput);
 
-        // ✅ USAR CHAT COMPLETIONS API (compatible con tu modelo)
+        // ✅ USAR CHAT COMPLETIONS API (formato exacto de LM Studio)
         var request = new ChatCompletionRequest
         {
             Model = ModelId,
@@ -206,9 +206,10 @@ internal sealed class Agent
             {
                 new("system", "Eres un asistente CLI inteligente. Responde SOLO con JSON válido."),
                 new("user", prompt)
-            },
-            Temperature = 0.1,
-            MaxTokens = 500
+            }
+            // Temperature = 0.7 (default)
+            // MaxTokens = -1 (default)
+            // Stream = false (default)
         };
 
         try
@@ -718,10 +719,14 @@ internal sealed class LmStudioClient
         }
     }
 
-    // ✅ CHAT COMPLETIONS API (compatible con tu modelo)
+    // ✅ CHAT COMPLETIONS API (formato exacto de LM Studio)
     public async Task<ChatCompletionResponse> CreateChatCompletionAsync(ChatCompletionRequest request, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(request, _jsonOptions);
+
+        // Log del payload para debugging
+        Console.WriteLine($"[DEBUG] Enviando a LM Studio: {payload}");
+
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
@@ -731,7 +736,10 @@ internal sealed class LmStudioClient
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"[DEBUG] Respuesta de LM Studio: {raw}");
             throw new InvalidOperationException($"LLM error: {(int)response.StatusCode} - {raw}");
+        }
 
         var completion = JsonSerializer.Deserialize<ChatCompletionResponse>(raw, _jsonOptions);
         return completion ?? throw new InvalidOperationException("Respuesta del LLM vacía o inválida.");
@@ -747,10 +755,13 @@ internal record ChatCompletionRequest
     public required List<ChatMessage> Messages { get; init; }
 
     [JsonPropertyName("temperature")]
-    public double Temperature { get; init; } = 0.1;
+    public double Temperature { get; init; } = 0.7;
 
     [JsonPropertyName("max_tokens")]
-    public int? MaxTokens { get; init; }
+    public int MaxTokens { get; init; } = -1;
+
+    [JsonPropertyName("stream")]
+    public bool Stream { get; init; } = false;
 }
 
 internal record ChatCompletionResponse
