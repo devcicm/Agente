@@ -217,11 +217,21 @@ internal sealed class Agent
             // ✅ USAR /v1/responses API para modelos de razonamiento
             var response = await _llm.CreateResponseAsync(ModelId, prompt, "medium", cancellationToken);
 
-            // La respuesta ya viene en formato de texto, no JSON
-            if (!string.IsNullOrEmpty(response.Output))
+            // Extraer el texto del formato de respuesta
+            if (response.Output != null && response.Output.Count > 0)
             {
-                // Intentar parsear si viene en formato JSON
-                return ParseReasoningResponse(response.Output);
+                var firstMessage = response.Output[0];
+                if (firstMessage.Content != null && firstMessage.Content.Count > 0)
+                {
+                    var textContent = firstMessage.Content
+                        .FirstOrDefault(c => c.Type == "output_text");
+
+                    if (textContent != null && !string.IsNullOrEmpty(textContent.Text))
+                    {
+                        // Intentar parsear el texto como JSON
+                        return ParseReasoningResponse(textContent.Text);
+                    }
+                }
             }
 
             // Si no hay output, usar fallback
@@ -612,47 +622,80 @@ internal sealed class Agent
     {
         try
         {
-            // Limpiar respuesta - buscar JSON
-            var jsonStart = response.IndexOf('{');
-            var jsonEnd = response.LastIndexOf('}');
-            if (jsonStart >= 0 && jsonEnd > jsonStart)
+            // Buscar todos los JSONs en el texto (el modelo de razonamiento incluye todo el proceso)
+            var jsonCandidates = new List<string>();
+            int braceDepth = 0;
+            int jsonStart = -1;
+
+            for (int i = 0; i < response.Length; i++)
             {
-                var json = response.Substring(jsonStart, jsonEnd - jsonStart + 1);
-                var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
-
-                JsonElement toolArgs;
-                if (root.TryGetProperty("tool_arguments", out var args) && args.ValueKind == JsonValueKind.Object)
+                if (response[i] == '{')
                 {
-                    toolArgs = args.Clone();
+                    if (braceDepth == 0) jsonStart = i;
+                    braceDepth++;
                 }
-                else
+                else if (response[i] == '}')
                 {
-                    toolArgs = JsonDocument.Parse("{}").RootElement;
+                    braceDepth--;
+                    if (braceDepth == 0 && jsonStart >= 0)
+                    {
+                        jsonCandidates.Add(response.Substring(jsonStart, i - jsonStart + 1));
+                        jsonStart = -1;
+                    }
                 }
+            }
 
-                return new ReasoningStep
+            // Intentar parsear cada JSON candidato (del último al primero)
+            for (int i = jsonCandidates.Count - 1; i >= 0; i--)
+            {
+                try
                 {
-                    Thought = root.TryGetProperty("thought", out var thought) ? thought.GetString() ?? "Analizando..." : "Analizando...",
-                    Action = root.TryGetProperty("action", out var action) ? action.GetString() ?? "" : "",
-                    ToolName = root.TryGetProperty("tool_name", out var tool) ? tool.GetString() : null,
-                    ToolArguments = toolArgs
-                };
+                    var doc = JsonDocument.Parse(jsonCandidates[i]);
+                    var root = doc.RootElement;
+
+                    // Verificar que tenga las propiedades esperadas
+                    if (root.TryGetProperty("thought", out _) && root.TryGetProperty("action", out _))
+                    {
+                        JsonElement toolArgs;
+                        if (root.TryGetProperty("tool_arguments", out var args) && args.ValueKind == JsonValueKind.Object)
+                        {
+                            toolArgs = args.Clone();
+                        }
+                        else
+                        {
+                            toolArgs = JsonDocument.Parse("{}").RootElement;
+                        }
+
+                        return new ReasoningStep
+                        {
+                            Thought = root.TryGetProperty("thought", out var thought) ? thought.GetString() ?? "Analizando..." : "Analizando...",
+                            Action = root.TryGetProperty("action", out var action) ? action.GetString() ?? "" : "",
+                            ToolName = root.TryGetProperty("tool_name", out var tool) ? tool.GetString() : null,
+                            ToolArguments = toolArgs
+                        };
+                    }
+                }
+                catch (JsonException)
+                {
+                    continue; // Intentar con el siguiente candidato
+                }
             }
         }
-        catch (JsonException)
+        catch (Exception ex)
         {
-            // Si no es JSON válido, buscar patrones simples
-            if (response.ToLower().Contains("listar") || response.ToLower().Contains("archivos") || response.ToLower().Contains("directory"))
+            Console.WriteLine($"[DEBUG] Error parseando respuesta: {ex.Message}");
+        }
+
+        // Si no encontramos JSON válido, buscar patrones simples
+        if (response.ToLower().Contains("listar") || response.ToLower().Contains("archivos") || response.ToLower().Contains("directory"))
+        {
+            return new ReasoningStep
             {
-                return new ReasoningStep
-                {
-                    Thought = "Listando directorio: " + response,
-                    Action = "Explorar archivos",
-                    ToolName = "list_directory",
-                    ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
-                };
-            }
+                Thought = "Listando directorio: " + response,
+                Action = "Explorar archivos",
+                ToolName = "list_directory",
+                ToolArguments = JsonDocument.Parse("""{"path": "."}""").RootElement
+            };
         }
 
         // Fallback a exploración
@@ -830,22 +873,52 @@ internal record ResponsesApiResponse
     public string? Id { get; init; }
 
     [JsonPropertyName("output")]
-    public string? Output { get; init; }
+    public List<ResponseMessage>? Output { get; init; }
 
-    [JsonPropertyName("reasoning")]
-    public ReasoningOutput? Reasoning { get; init; }
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
 
-    [JsonPropertyName("finish_reason")]
-    public string? FinishReason { get; init; }
+    [JsonPropertyName("usage")]
+    public UsageInfo? Usage { get; init; }
 }
 
-internal record ReasoningOutput
+internal record ResponseMessage
 {
-    [JsonPropertyName("content")]
-    public string? Content { get; init; }
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
 
-    [JsonPropertyName("effort")]
-    public string? Effort { get; init; }
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("role")]
+    public string? Role { get; init; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    [JsonPropertyName("content")]
+    public List<ContentItem>? Content { get; init; }
+}
+
+internal record ContentItem
+{
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("text")]
+    public string? Text { get; init; }
+}
+
+internal record UsageInfo
+{
+    [JsonPropertyName("input_tokens")]
+    public int InputTokens { get; init; }
+
+    [JsonPropertyName("output_tokens")]
+    public int OutputTokens { get; init; }
+
+    [JsonPropertyName("total_tokens")]
+    public int TotalTokens { get; init; }
 }
 
 internal static class Ui
