@@ -5,7 +5,9 @@
       "Bash(findstr:*)",
       "Bash(tasklist /FI \"PID eq 19708\" /FO LIST)",
       "Bash(powershell -Command \"Get-Process -Id 19708 | Select-Object Name, Path, Id\")",
-      "Bash(python -m json.tool:*)"
+      "Bash(python -m json.tool:*)",
+      "WebSearch",
+      "Bash(tasklist:*)"
     ],
     "deny": [],
     "ask": []

@@ -214,9 +214,19 @@ internal sealed class Agent
 
         try
         {
-            var response = await _llm.CreateChatCompletionAsync(request, cancellationToken);
-            var content = response.Choices.First().Message.Content ?? "{}";
-            return ParseReasoningResponse(content);
+            // ✅ USAR /v1/responses API para modelos de razonamiento
+            var response = await _llm.CreateResponseAsync(ModelId, prompt, "medium", cancellationToken);
+
+            // La respuesta ya viene en formato de texto, no JSON
+            if (!string.IsNullOrEmpty(response.Output))
+            {
+                // Intentar parsear si viene en formato JSON
+                return ParseReasoningResponse(response.Output);
+            }
+
+            // Si no hay output, usar fallback
+            Console.WriteLine($"[DEBUG] Respuesta vacía del LLM, usando fallback");
+            return CreateIntelligentFallback(userInput);
         }
         catch (Exception ex)
         {
@@ -685,7 +695,7 @@ internal sealed class LmStudioClient
         _http = new HttpClient
         {
             BaseAddress = new Uri(baseUrl.TrimEnd('/')),
-            Timeout = TimeSpan.FromSeconds(120)
+            Timeout = TimeSpan.FromSeconds(300)  // 5 minutos para modelos de razonamiento
         };
         _http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         BaseUrl = baseUrl.TrimEnd('/');
@@ -719,7 +729,40 @@ internal sealed class LmStudioClient
         }
     }
 
-    // ✅ CHAT COMPLETIONS API (formato exacto de LM Studio)
+    // ✅ RESPONSES API - Para modelos de razonamiento (gpt-oss)
+    public async Task<ResponsesApiResponse> CreateResponseAsync(string modelId, string input, string reasoningEffort = "medium", CancellationToken cancellationToken = default)
+    {
+        var requestBody = new
+        {
+            model = modelId,
+            input = input,
+            reasoning = new { effort = reasoningEffort },
+            stream = false
+        };
+
+        var payload = JsonSerializer.Serialize(requestBody, _jsonOptions);
+        Console.WriteLine($"[DEBUG] Enviando a /v1/responses: {payload}");
+
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json")
+        };
+
+        var response = await _http.SendAsync(httpRequest, cancellationToken);
+        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
+
+        Console.WriteLine($"[DEBUG] Respuesta de /v1/responses: {raw}");
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"LLM error: {(int)response.StatusCode} - {raw}");
+        }
+
+        var responsesApiResponse = JsonSerializer.Deserialize<ResponsesApiResponse>(raw, _jsonOptions);
+        return responsesApiResponse ?? throw new InvalidOperationException("Respuesta del LLM vacía o inválida.");
+    }
+
+    // ✅ CHAT COMPLETIONS API (formato exacto de LM Studio) - LEGACY
     public async Task<ChatCompletionResponse> CreateChatCompletionAsync(ChatCompletionRequest request, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(request, _jsonOptions);
@@ -779,6 +822,31 @@ internal record ChatChoice
 internal record ChatMessage(
     [property: JsonPropertyName("role")] string Role,
     [property: JsonPropertyName("content")] string Content);
+
+// ✅ RESPONSES API MODELS
+internal record ResponsesApiResponse
+{
+    [JsonPropertyName("id")]
+    public string? Id { get; init; }
+
+    [JsonPropertyName("output")]
+    public string? Output { get; init; }
+
+    [JsonPropertyName("reasoning")]
+    public ReasoningOutput? Reasoning { get; init; }
+
+    [JsonPropertyName("finish_reason")]
+    public string? FinishReason { get; init; }
+}
+
+internal record ReasoningOutput
+{
+    [JsonPropertyName("content")]
+    public string? Content { get; init; }
+
+    [JsonPropertyName("effort")]
+    public string? Effort { get; init; }
+}
 
 internal static class Ui
 {
