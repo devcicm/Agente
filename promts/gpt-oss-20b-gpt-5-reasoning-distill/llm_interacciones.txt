@@ -1,0 +1,16 @@
+Resumen de interacciones con LLM (LM Studio 10.5.60.201:1234)
+------------------------------------------------------------
+1) /v1/models
+   - Modelos: gpt-oss-20b-gpt-5-reasoning-distill, openai/gpt-oss-120b, text-embedding-nomic-embed-text-v1.5
+
+2) /v1/chat/completions (intentos iniciales)
+   - Sin response_format: devolvía tool-call wrappers (<|channel|>) y Bad Request al inicio por body vacío.
+
+3) /v1/responses
+   - Payload test_lm_direct.json funcionó (status completed) con texto de acción para buscar PNG.
+
+4) /v1/chat/completions con response_format json_schema
+   - Prompt en español + schema: JSON plano
+     Ejemplo: {"tool_arguments":{"path":".","pattern":"*.png"},"tool_name":"search_files","thought":"Para listar los archivos PNG en el directorio actual, usaré la herramienta search_files con patrón *.png.","action":"listado de archivos PNG","mock_result":["image1.png","diagram.png","logo.png"]}
+
+5) Prompt final (producción deseada): español, sin mock_result, JSON plano, sin tool-calls ni wrappers, con schema requerido en thought/action/tool_name/tool_arguments.

@@ -1,0 +1,49 @@
+{
+    "messages":  [
+                     {
+                         "content":  "Eres un agente CLI y respondes SIEMPRE en español.\nDevuelve SOLO JSON plano sin prefijos/sufijos ni tool-calls ni etiquetas raras. Si no puedes, responde exactamente {\"error\":\"bad_format\"}.\nContexto:\n- Herramientas: read_file, write_file, list_directory, search_files, run_shell_command, sql_command, list_databases, list_tables, http_request, web_search, list_processes, kill_process, analyze_code, search_code\n- Directorio actual: C:\\Users\\Carlos Ivan\\Desktop\\Agente\n\nInstrucciones:\n- Identifica intención (info/acción/conversación/ambigua) y sentimiento.\n- Usa tool_name y tool_arguments mínimos para cumplir la petición.\n- thought y action deben estar redactados en español.\n- Sin mock_result en producción.",
+                         "role":  "system"
+                     },
+                     {
+                         "content":  "enlista los archivos png",
+                         "role":  "user"
+                     }
+                 ],
+    "stream":  false,
+    "max_tokens":  256,
+    "response_format":  {
+                            "json_schema":  {
+                                                "strict":  true,
+                                                "name":  "cli_agent_response",
+                                                "schema":  {
+                                                               "additionalProperties":  false,
+                                                               "properties":  {
+                                                                                  "tool_arguments":  {
+                                                                                                         "nullable":  true,
+                                                                                                         "type":  "object"
+                                                                                                     },
+                                                                                  "tool_name":  {
+                                                                                                    "nullable":  true,
+                                                                                                    "type":  "string"
+                                                                                                },
+                                                                                  "thought":  {
+                                                                                                  "type":  "string"
+                                                                                              },
+                                                                                  "action":  {
+                                                                                                 "type":  "string"
+                                                                                             }
+                                                                              },
+                                                               "type":  "object",
+                                                               "required":  [
+                                                                                "thought",
+                                                                                "action",
+                                                                                "tool_name",
+                                                                                "tool_arguments"
+                                                                            ]
+                                                           }
+                                            },
+                            "type":  "json_schema"
+                        },
+    "model":  "gpt-oss-20b-gpt-5-reasoning-distill",
+    "temperature":  0.1
+}

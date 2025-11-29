@@ -7,7 +7,13 @@
       "Bash(powershell -Command \"Get-Process -Id 19708 | Select-Object Name, Path, Id\")",
       "Bash(python -m json.tool:*)",
       "WebSearch",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "Bash(powershell -Command \"$env:ENABLE_HTTP_SERVER=''true''; dotnet run --project ''Plataforma/C#/Agent.csproj''\")",
+      "Bash(powershell -Command \"Invoke-RestMethod -Uri ''http://localhost:5000/agent/status'' -Method Get\")",
+      "Bash(powershell -Command \"$body = Get-Content ''test_lm_direct.json'' -Raw; Invoke-RestMethod -Uri ''http://localhost:1234/v1/responses'' -Method Post -Body $body -ContentType ''application/json'' | ConvertTo-Json -Depth 10\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"test-lm-studio.ps1\":*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File \"../../test-lm-simple.ps1\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File:*)"
     ],
     "deny": [],
     "ask": []
