@@ -1,0 +1,9 @@
+.claude/
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.log
+*.pdb
+*.exe
