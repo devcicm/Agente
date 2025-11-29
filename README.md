@@ -1,43 +1,47 @@
-# Agente LLM – Modo Engine
+# Agente LLM - Modo Engine
 
-Este repositorio contiene dos piezas:
+Este proyecto usa LM Studio como servidor de LLM local. La parte estable es el engine de consola; el agente principal en `Plataforma/C#/Agent.csproj` esta incompleto y no debe usarse por ahora.
 
-- **Plataforma/C#/Agent.csproj**: implementación principal del agente CLI (incompleta / en desarrollo). No se recomienda compilar ni usarla por ahora.
-- **Plataforma/C#/engine/**: proyecto de consola estable que permite comunicarse con el LLM (sin operaciones de sistema como archivos, bash o base de datos).
+## Que es LM Studio
+LM Studio es una aplicacion de escritorio para descargar y ejecutar modelos LLM de forma local. Expone una API compatible con OpenAI (chat completions) y una API propia (`/v1/responses`) que podemos consumir desde el engine.
 
-## Uso recomendado (engine)
+- Descarga: https://lmstudio.ai/
+- Tras instalar, abre LM Studio y descarga un modelo (ej. `gpt-oss-20b-gpt-5-reasoning-distill`).
+- En la pestaña de servidor, habilita el endpoint local (por defecto `http://localhost:1234`). Si quieres acceder desde otra maquina, permite conexiones LAN y ajusta el puerto si es necesario.
 
-1. Ir a la carpeta del engine:
-   ```powershell
-   cd Plataforma\C#\engine
-   ```
-2. Modo interactivo (por defecto sin streaming):
-   ```powershell
-   dotnet run
-   ```
-   - Comandos dentro del prompt:
-     - `/stream on|off` para activar/desactivar SSE.
-     - `/debug on|off` para ver logs y JSON raw.
-     - `/test` para probar conectividad básica.
-     - `/exit` para salir.
-3. Modo single-shot:
-   ```powershell
-   dotnet run -- "tu mensaje"
-   ```
-   Con SSE:
-   ```powershell
-   dotnet run -- --stream "tu mensaje"
-   ```
-4. Configurar endpoint/modelo (opcional):
-   - `LMSTUDIO_URL` (por defecto `http://localhost:1234`)
-   - `LMSTUDIO_MODEL` (por defecto `gpt-oss-20b-gpt-5-reasoning-distill`)
+## Uso recomendado (solo engine)
+1) Ir a la carpeta del engine:
+```
+cd Plataforma\C#\engine
+```
+2) Modo interactivo (por defecto sin streaming):
+```
+dotnet run
+```
+Comandos dentro del prompt:
+- `/stream on|off` activa/desactiva SSE (streaming).
+- `/debug on|off` muestra logs y JSON raw.
+- `/test` prueba conectividad basica.
+- `/exit` sale del programa.
 
-## Advertencia
+3) Modo single-shot:
+```
+dotnet run -- "tu mensaje"
+```
+Con SSE:
+```
+dotnet run -- --stream "tu mensaje"
+```
 
-- **No compilar ni usar `Plataforma/C#/Agent.csproj`**: está incompleto y en fase de desarrollo.
-- El engine en `Plataforma/C#/engine` es la vía soportada para comunicarse con el LLM sin operaciones de sistema.
+4) Configurar endpoint/modelo (opcional):
+- `LMSTUDIO_URL` (default `http://localhost:1234`)
+- `LMSTUDIO_MODEL` (default `gpt-oss-20b-gpt-5-reasoning-distill`)
 
-## Notas
+## Advertencias
+- No compiles ni uses `Plataforma/C#/Agent.csproj`: esta incompleto y en fase de desarrollo.
+- Usa solo `Plataforma/C#/engine` para comunicarte con el LLM; no expone operaciones de sistema (archivos, bash, bases de datos).
+- En streaming el engine muestra un contador; si no llegan datos del LLM, lo reporta. En modo no streaming avisa si la respuesta llega vacia.
 
-- El engine soporta SSE: muestra los chunks en vivo y un contador de tiempo; si no se recibe contenido, lo indica explícitamente.
-- En modo no streaming, si la respuesta llega vacía, se muestra un aviso.
+## Estado del repositorio
+- Engine funcional en `Plataforma/C#/engine`.
+- Agente principal en `Plataforma/C#/Agent.csproj` pendiente de completar; no recomendado.
