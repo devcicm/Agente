@@ -16,6 +16,19 @@ const { execSync } = require('child_process');
 
 const Logger = require('../logger');
 
+// Módulos de formateo estilo Claude Code
+const {
+  printLLMResult: printLLMResultEnhanced,
+  printWelcomeBanner,
+  printModelsList,
+  printCommandMenu,
+  printComparisonResults,
+  printSuccess,
+  printError,
+  printWarning,
+  printInfo
+} = require('../formatters/printer');
+
 
 
 dotenv.config();
@@ -467,11 +480,8 @@ function completer(line) {
 
 function showCommandMenu() {
 
-  console.log('\nComandos disponibles:');
-
-  commandInfo.forEach((c, i) => console.log(`  ${i + 1}. ${c.cmd} - ${c.desc}`));
-
-  console.log('Escribe el numero para ejecutar o el comando directamente.');
+  // Usar el nuevo sistema de formateo para el menú de comandos
+  printCommandMenu(commandInfo);
 
 }
 
@@ -891,53 +901,15 @@ function printLLMResult(result) {
 
   if (!result) return;
 
-
-
-  const thinking = result.thinking ? sanitizeForTerminal(result.thinking) : null;
-
-  const response = sanitizeForTerminal(result.response || '(vacia)');
-
-
-
-  hr(`${ICON.reply} Resultado`);
-
-  console.log(`Model: ${sanitizeForTerminal(result.model ?? config.model)}`);
-
-  if (config.showThinking && thinking) {
-
-    console.log('\n[THINKING]');
-
-    console.log(thinking);
-
-  }
-
-  console.log(`\n[RESPUESTA]`);
-
-  console.log(response);
-
-
-
-  if (result.usage) {
-
-    console.log(`\n${ICON.usage} Usage`);
-
-    console.log(sanitizeForTerminal(JSON.stringify(result.usage, null, 2), { repair: false }));
-
-  }
-
-  console.log(`\nprevious_response_id: ${result.previous_response_id ?? 'null'}`);
-
-
-
-  if (config.showRaw && result.raw) {
-
-    console.log(`\n${ICON.raw} RAW JSON`);
-
-    console.log(sanitizeForTerminal(JSON.stringify(result.raw, null, 2), { repair: false }));
-
-  }
-
-  hr();
+  // Usar el nuevo sistema de formateo con markdown estilo Claude Code
+  printLLMResultEnhanced(result, {
+    showThinking: config.showThinking,
+    showUsage: true,
+    showRaw: config.showRaw,
+    markdownRender: true, // Siempre renderizar markdown
+    showModel: true,
+    showId: true
+  });
 
 }
 
@@ -1188,13 +1160,9 @@ async function listModels() {
 
 
 
-    hr(`${ICON.info} Modelos disponibles`);
-
     if (!list.length) {
 
-      console.log('No se encontraron modelos.');
-
-      hr();
+      printWarning('No se encontraron modelos.');
 
       return [];
 
@@ -1202,17 +1170,8 @@ async function listModels() {
 
 
 
-    list.forEach((m, i) => {
-
-      const id = m?.id ?? String(m);
-
-      console.log(`${i + 1}. ${id}`);
-
-      if (m?.name && m.name !== id) console.log(`   name: ${m.name}`);
-
-    });
-
-    hr();
+    // Usar el nuevo sistema de formateo para listar modelos
+    printModelsList(list, config.model);
 
     return list;
 
@@ -1220,9 +1179,7 @@ async function listModels() {
 
     logger.error('Error obteniendo modelos: %s', error.message);
 
-    console.log(`${ICON.err} Error obteniendo modelos`);
-
-    console.log(sanitizeForTerminal(error.message));
+    printError('Error obteniendo modelos', error.message);
 
     return [];
 
@@ -1415,23 +1372,11 @@ async function invokeForModel(modelId, prompt) {
 
 async function compareModels(prompt = 'hola') {
 
-  hr(`${ICON.info} Compare`);
-
-  console.log(`Prompt: "${sanitizeForTerminal(prompt)}"`);
-
-  console.log(`Modo salida: ${config.showRaw ? 'RAW JSON' : 'PARSEADO (thinking/response)'}`);
-
-  hr();
-
-
-
   const models = await getModelsSilent();
 
   if (!models.length) {
 
-    console.log(`${ICON.warn} No hay modelos disponibles para comparar.`);
-
-    hr();
+    printWarning('No hay modelos disponibles para comparar.');
 
     return;
 
@@ -1439,63 +1384,34 @@ async function compareModels(prompt = 'hola') {
 
 
 
+  // Recolectar resultados de todos los modelos
+  const results = [];
+
   for (let i = 0; i < models.length; i++) {
 
     const modelId = models[i].id || models[i];
 
-    console.log(`\n[${i + 1}/${models.length}] Modelo: ${modelId}`);
-
-
-
     const result = await invokeForModel(modelId, prompt);
 
-    if (result.error) {
 
-      console.log(`${ICON.err} Error (${result.duration_ms}ms): ${sanitizeForTerminal(result.error)}`);
 
-      continue;
-
+    // Parsear la respuesta si no hubo error
+    if (!result.error && result.raw) {
+      result.parsed = parseLMStudioResponse(result.raw);
     }
 
 
 
-    if (config.showRaw) {
-
-      console.log(`\n${ICON.raw} RAW JSON:`);
-
-      console.log(sanitizeForTerminal(JSON.stringify(result.raw, null, 2), { repair: false }));
-
-    } else {
-
-      const parsed = parseLMStudioResponse(result.raw);
-
-
-
-      if (config.showThinking && parsed.thinking) {
-
-        console.log('\n[THINKING]');
-
-        console.log(sanitizeForTerminal(parsed.thinking));
-
-      }
-
-      console.log(`\n[RESPUESTA]`);
-
-      console.log(sanitizeForTerminal(parsed.response || '(vacia)'));
-
-    }
-
-
-
-    console.log(`\n  duration_ms: ${result.duration_ms}`);
+    results.push(result);
 
   }
 
 
 
-  console.log('\n=== Fin de comparacion ===');
-
-  hr();
+  // Usar el nuevo sistema de formateo para mostrar comparación
+  printComparisonResults(results, prompt, {
+    markdown: !config.showRaw
+  });
 
 }
 
@@ -1589,18 +1505,16 @@ program
 
 async function startInteractiveMode() {
 
-  hr('Agente NPM - Modo Interactivo');
+  // Banner de bienvenida mejorado estilo Claude Code
+  printWelcomeBanner({
+    model: config.model,
+    baseUrl: config.baseUrl,
+    stream: config.stream,
+    debug: config.debug
+  });
 
-  console.log(`${ICON.model} Modelo: ${config.model}`);
-
-  console.log(`${ICON.net} Endpoint: ${config.baseUrl}`);
-
-  console.log(`${ICON.mode} Modo: ${config.stream ? 'Streaming' : 'Batch'}`);
-
-  console.log(`${ICON.bug} Debug: ${config.debug ? 'ON' : 'OFF'}`);
-
+  // Información adicional
   console.log(`${ICON.raw} ShowRaw: ${config.showRaw ? 'ON' : 'OFF'}`);
-
   console.log(`${ICON.info} Runtime: ${process.pkg ? 'pkg' : 'node'} ${process.version}`);
   console.log(`${ICON.info} CodePage: ${cp ?? 'n/a'} (AUTO_UTF8_CONSOLE=${shouldAutoEnableUtf8Console() ? 'ON' : 'OFF'})`);
   console.log(`${ICON.info} Request sanitize: ON`);
@@ -1609,8 +1523,7 @@ async function startInteractiveMode() {
   if (config.instructions && sanitizeForRequest(config.instructions)) {
     console.log(`${ICON.info} Instructions: ON (LMSTUDIO_INSTRUCTIONS)`);
   }
-
-  hr();
+  console.log();
 
 
 

@@ -24,14 +24,20 @@
   "license": "MIT",
   "dependencies": {
     "axios": "0.21.4",
+    "boxen": "^5.1.2",
+    "chalk": "^4.1.2",
+    "cli-table3": "^0.6.3",
     "commander": "^11.1.0",
     "dotenv": "^16.3.1",
+    "highlight.js": "^11.9.0",
     "ink": "^3.0.0",
-    "react": "^17.0.2"
+    "marked": "^4.3.0",
+    "react": "^17.0.2",
+    "strip-ansi": "^6.0.1",
+    "terminal-link": "^2.1.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
     "pkg": "^5.8.1"
   }
 }
-
