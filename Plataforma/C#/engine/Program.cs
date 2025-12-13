@@ -810,6 +810,11 @@ namespace EngineConsole
         private static List<string> _activeModels = new List<string> { DefaultModel };
         private static bool _useMultipleModels = false;
 
+        // Variables para TTS
+        private static bool _useTts = false;
+        private static VibeVoiceClient? _ttsClient = null;
+        private static int _ttsCounter = 1;
+
         // Lista de preguntas para testing
         private static readonly List<TestQuestion> _testQuestions = new()
         {
@@ -907,7 +912,7 @@ namespace EngineConsole
             Console.WriteLine("  /help         - Mostrar ayuda");
             Console.WriteLine("  /clear        - Limpiar pantalla");
             Console.WriteLine("  /logs on/off  - Activar/desactivar logging a archivo");
-            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming");
+            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming (usa: /stream on tts para TTS)");
             Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
             Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
             Console.WriteLine("  /models       - Listar modelos disponibles");
@@ -978,8 +983,39 @@ namespace EngineConsole
             
             if (lowerLine.StartsWith("/stream"))
             {
-                useStream = line.ToLowerInvariant().Contains("on");
-                Console.WriteLine($"Streaming {(useStream ? "activado" : "desactivado")}.");
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var hasTts = parts.Any(p => p.Equals("tts", StringComparison.OrdinalIgnoreCase));
+                var hasOn = line.ToLowerInvariant().Contains("on");
+                var hasOff = line.ToLowerInvariant().Contains("off");
+
+                if (hasOff)
+                {
+                    useStream = false;
+                    _useTts = false;
+                    Console.WriteLine("Streaming: desactivado | TTS: desactivado");
+                }
+                else if (hasOn)
+                {
+                    useStream = true;
+                    _useTts = hasTts;
+                    if (_useTts)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine("✓ Streaming + TTS: activado");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.WriteLine("Streaming: activado | TTS: desactivado");
+                    }
+                }
+                else
+                {
+                    // Toggle
+                    useStream = !useStream;
+                    _useTts = false;
+                    Console.WriteLine($"Streaming: {(useStream ? "activado" : "desactivado")} | TTS: desactivado");
+                }
                 return true;
             }
             
@@ -1234,7 +1270,7 @@ namespace EngineConsole
             Console.WriteLine("  /help         - Mostrar esta ayuda");
             Console.WriteLine("  /clear        - Limpiar pantalla");
             Console.WriteLine("  /logs on/off  - Activar/desactivar logging a archivo");
-            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming");
+            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming (usa: /stream on tts para TTS)");
             Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
             Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
             Console.WriteLine("  /models       - Listar modelos disponibles");
@@ -1254,6 +1290,62 @@ namespace EngineConsole
             Console.WriteLine("  /clear                     - Limpia la pantalla");
         }
 
+        private static VibeVoiceClient GetTtsClient()
+        {
+            if (_ttsClient == null)
+            {
+                _ttsClient = new VibeVoiceClient(new VibeVoiceConfig
+                {
+                    ServerUrl = Environment.GetEnvironmentVariable("VIBEVOICE_URL") ?? "ws://localhost:3000",
+                    DefaultVoice = "Carter",
+                    Debug = false
+                });
+            }
+            return _ttsClient;
+        }
+
+        private static async Task SynthesizeIfEnabledAsync(string? text)
+        {
+            if (!_useTts || string.IsNullOrWhiteSpace(text))
+                return;
+
+            try
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("\nℹ Sintetizando audio...");
+                Console.ResetColor();
+
+                var client = GetTtsClient();
+                var isHealthy = await client.CheckHealthAsync();
+
+                if (!isHealthy)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("⚠ Servidor TTS no disponible (ws://localhost:3000)");
+                    Console.WriteLine("ℹ Inicia el servidor con: cd ..\\tts && start-vibevoice-server.bat");
+                    Console.ResetColor();
+                    return;
+                }
+
+                var outputFile = $"tts-output-{_ttsCounter++}.wav";
+                var result = await client.SynthesizeAsync(text, new SynthesisOptions
+                {
+                    Voice = "Carter",
+                    OutputFile = outputFile
+                });
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"✓ Audio generado: {outputFile} ({(result.Audio.Length / 1024.0):F2} KB)");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"✗ Error TTS: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+
         private static async Task RunOnce(string baseUrl, List<string> modelIds, string input, bool useStream, bool showDebug = false)
         {
             try
@@ -1268,17 +1360,18 @@ namespace EngineConsole
                     Console.ResetColor();
 
                     var results = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, input, useStream, showDebug);
-                    
+
                     Console.ForegroundColor = ConsoleColor.Cyan;
                     Console.WriteLine("\n=== COMPARACIÓN DE RESPUESTAS ===");
                     Console.ResetColor();
-                    
+
+                    var firstResponse = string.Empty;
                     foreach (var (model, result) in results)
                     {
                         Console.ForegroundColor = ConsoleColor.Yellow;
                         Console.WriteLine($"\n--- {model} ---");
                         Console.ResetColor();
-                        
+
                         if (result.HasThinking)
                         {
                             Console.ForegroundColor = ConsoleColor.DarkGray;
@@ -1287,15 +1380,23 @@ namespace EngineConsole
                             Console.WriteLine();
                             Console.ResetColor();
                         }
-                        
+
                         if (result.HasResponse)
                         {
                             Console.ForegroundColor = ConsoleColor.White;
                             Console.WriteLine("[RESPONSE]:");
                             Console.WriteLine(result.Response);
                             Console.ResetColor();
+
+                            // Guardar primera respuesta para TTS
+                            if (string.IsNullOrEmpty(firstResponse))
+                                firstResponse = result.Response;
                         }
                     }
+
+                    // Sintetizar primera respuesta si TTS está activado
+                    if (!string.IsNullOrEmpty(firstResponse))
+                        await SynthesizeIfEnabledAsync(firstResponse);
                 }
                 else
                 {
@@ -1354,6 +1455,9 @@ namespace EngineConsole
                             Console.WriteLine("[RESPUESTA]:");
                             Console.WriteLine(result.Response);
                             Console.ResetColor();
+
+                            // Sintetizar audio si TTS está activado
+                            await SynthesizeIfEnabledAsync(result.Response);
                         }
 
                         if (!result.HasThinking && !result.HasResponse)
@@ -1404,6 +1508,8 @@ namespace EngineConsole
                         else
                         {
                             Console.WriteLine(text);
+                            // Sintetizar audio si TTS está activado
+                            await SynthesizeIfEnabledAsync(text);
                         }
                     }
                 }

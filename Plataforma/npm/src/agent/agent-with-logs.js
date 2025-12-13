@@ -29,6 +29,9 @@ const {
   printInfo
 } = require('../formatters/printer');
 
+// Cliente TTS VibeVoice
+const VibeVoiceClient = require('../../tts/vibevoice-client');
+
 
 
 dotenv.config();
@@ -412,6 +415,8 @@ const config = {
 
   stream: process.env.STREAM_MODE === 'true',
 
+  tts: false, // Text-to-Speech activado
+
   showRaw: process.env.SHOW_RAW === 'true',
 
   showThinking: process.env.SHOW_THINKING === 'true',
@@ -423,6 +428,55 @@ const config = {
 
 
 const logger = new Logger({ logLevel: config.debug ? 'debug' : 'info' });
+
+
+
+/* ============================================================
+
+   TTS Client Setup
+
+   ============================================================ */
+
+let ttsClient = null;
+let ttsCounter = 1;
+
+function getTtsClient() {
+  if (!ttsClient) {
+    ttsClient = new VibeVoiceClient({
+      serverUrl: process.env.VIBEVOICE_URL || 'ws://localhost:3000',
+      defaultVoice: 'Carter',
+      debug: config.debug
+    });
+  }
+  return ttsClient;
+}
+
+async function synthesizeIfEnabled(text) {
+  if (!config.tts || !text) return;
+
+  try {
+    console.log(`\n${ICON.info} Sintetizando audio...`);
+
+    const client = getTtsClient();
+    const isHealthy = await client.checkHealth();
+
+    if (!isHealthy) {
+      console.log(`${ICON.warn} Servidor TTS no disponible (ws://localhost:3000)`);
+      console.log(`${ICON.info} Inicia el servidor con: cd ../tts && ./start-vibevoice-server.bat`);
+      return;
+    }
+
+    const outputFile = `tts-output-${ttsCounter++}.wav`;
+    const result = await client.synthesize(text, {
+      voice: 'Carter',
+      outputFile
+    });
+
+    console.log(`${ICON.ok} Audio generado: ${outputFile} (${(result.audio.length / 1024).toFixed(2)} KB)`);
+  } catch (error) {
+    console.log(`${ICON.error} Error TTS: ${error.message}`);
+  }
+}
 
 
 
@@ -443,7 +497,7 @@ const commandInfo = [
   { cmd: '/lang', desc: 'Forzar idioma: /lang es | /lang en | /lang off' },
   { cmd: '/instructions', desc: 'Set instrucciones (sistema): /instructions <texto> | /instructions off' },
   { cmd: '/thinking', desc: 'Mostrar thinking: /thinking on | /thinking off' },
-  { cmd: '/stream', desc: 'Streaming: /stream | /stream on | /stream off' },
+  { cmd: '/stream', desc: 'Streaming: /stream | /stream on | /stream off | /stream on tts' },
   { cmd: '/nostream', desc: 'Alias: desactivar streaming' },
   { cmd: '/debug', desc: 'Debug: /debug | /debug on | /debug off' },
   { cmd: '/showraw', desc: 'RAW: /showraw | /showraw on | /showraw off (afecta compare/prints)' },
@@ -942,13 +996,19 @@ function parseBoolWord(x) {
 
 function applyStreamCommand(args) {
 
-  const b = parseBoolWord(args[0]);
+  // Detectar '/stream on tts' o '/stream tts'
+  const hasTts = args.some(arg => arg.toLowerCase() === 'tts');
+
+  // Remover 'tts' de los args para procesar on/off
+  const argsWithoutTts = args.filter(arg => arg.toLowerCase() !== 'tts');
+  const b = parseBoolWord(argsWithoutTts[0]);
 
   if (b === null) {
 
     if (!args.length) {
 
       config.stream = !config.stream;
+      config.tts = false; // Toggle stream solo, desactivar TTS
 
       console.log(`${ICON.ok} Streaming: ${config.stream ? 'ON' : 'OFF'}`);
 
@@ -956,15 +1016,20 @@ function applyStreamCommand(args) {
 
     }
 
-    console.log(`${ICON.warn} Uso: /stream | /stream on | /stream off`);
+    console.log(`${ICON.warn} Uso: /stream | /stream on | /stream off | /stream on tts`);
 
     return;
 
   }
 
   config.stream = b;
+  config.tts = b && hasTts; // TTS solo si stream es true Y se especificó 'tts'
 
-  console.log(`${ICON.ok} Streaming: ${config.stream ? 'ON' : 'OFF'}`);
+  if (config.tts) {
+    console.log(`${ICON.ok} Streaming + TTS: ON`);
+  } else {
+    console.log(`${ICON.ok} Streaming: ${config.stream ? 'ON' : 'OFF'} | TTS: OFF`);
+  }
 
 }
 
@@ -1488,6 +1553,11 @@ program
 
       if (result && !config.stream) printLLMResult(result);
 
+      // Sintetizar audio si TTS está activado
+      if (result && result.response) {
+        await synthesizeIfEnabled(result.response);
+      }
+
       process.exit(0);
 
     }
@@ -1748,7 +1818,10 @@ async function startInteractiveMode() {
 
           if (result && !config.stream) printLLMResult(result);
 
-
+          // Sintetizar audio si TTS está activado
+          if (result && result.response) {
+            await synthesizeIfEnabled(result.response);
+          }
 
           return rl.prompt();
 
