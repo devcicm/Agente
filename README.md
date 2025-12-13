@@ -9,7 +9,9 @@ LM Studio es una aplicacion de escritorio para descargar y ejecutar modelos LLM 
 - Tras instalar, abre LM Studio y descarga un modelo (ej. `gpt-oss-20b-gpt-5-reasoning-distill`).
 - En la pestaña de servidor, habilita el endpoint local (por defecto `http://localhost:1234`). Si quieres acceder desde otra maquina, permite conexiones LAN y ajusta el puerto si es necesario.
 
-## Uso recomendado (solo engine)
+## Opciones de uso
+
+### 1. Engine C# (Original)
 1) Ir a la carpeta del engine:
 ```
 cd Plataforma\C#\engine
@@ -17,6 +19,24 @@ cd Plataforma\C#\engine
 2) Modo interactivo (por defecto sin streaming):
 ```
 dotnet run
+```
+
+### 2. Agente NPM (Alternativa moderna)
+1) Ir a la carpeta del agente NPM:
+```
+cd Plataforma\npm
+```
+2) Instalar dependencias:
+```
+npm install
+```
+3) Modo interactivo:
+```
+npm start
+```
+4) Compilar como ejecutable nativo:
+```
+npm run build
 ```
 Comandos dentro del prompt:
 - `/stream on|off` activa/desactiva SSE (streaming).
@@ -42,6 +62,11 @@ dotnet run -- --stream "tu mensaje"
 - Usa solo `Plataforma/C#/engine` para comunicarte con el LLM; no expone operaciones de sistema (archivos, bash, bases de datos).
 - En streaming el engine muestra un contador; si no llegan datos del LLM, lo reporta. En modo no streaming avisa si la respuesta llega vacia.
 
-## Estado del repositorio
-- Engine funcional en `Plataforma/C#/engine`.
+## Estado del repositorio ✅
+- **Engine funcional en `Plataforma/C#/engine`** - Original en C#
+- **Agente NPM funcional en `Plataforma/npm`** - ✅ Alternativa moderna con Node.js (COMPLETADO)
+- **Ejecutable nativo: `agente-npm.exe`** - ✅ 38.2 MB, funcional y probado
+- **Sistema de logs mejorado** - ✅ Con timestamps, niveles y persistencia
+- **Comando de ping a LM Studio** - ✅ Con medición de tiempo de respuesta
+- **Comando curl a LM Studio** - ✅ Lista modelos disponibles (NUEVO)
 - Agente principal en `Plataforma/C#/Agent.csproj` pendiente de completar; no recomendado.

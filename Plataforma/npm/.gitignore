@@ -1,0 +1,4 @@
+node_modules/
+logs/
+.env
+agente-npm*.exe

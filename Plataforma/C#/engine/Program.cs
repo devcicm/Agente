@@ -9,6 +9,7 @@ using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace EngineConsole
 {
@@ -28,6 +29,12 @@ namespace EngineConsole
         public override string ToString() => $"{Name} ({Id})";
     }
 
+    public class TestQuestion
+    {
+        public string Question { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+    }
+
     internal static class Engine
     {
         private static readonly HttpClient Http = new()
@@ -42,6 +49,99 @@ namespace EngineConsole
             WriteIndented = true
         };
 
+        // Logger global
+        private static StreamWriter? _logWriter;
+        private static bool _loggingEnabled = false;
+        private static readonly object _logLock = new object();
+
+        public static void InitializeLogger()
+        {
+            if (_loggingEnabled && _logWriter == null)
+            {
+                var logFile = $"llm_log_{DateTime.Now:yyyyMMdd_HHmmss}.txt";
+                _logWriter = new StreamWriter(logFile, append: true, Encoding.UTF8);
+                _logWriter.AutoFlush = true;
+                
+                LogToFile("=== LOG INICIADO ===");
+                LogToFile($"Fecha: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                LogToFile($"Directorio: {Environment.CurrentDirectory}");
+                LogToFile("====================\n");
+            }
+        }
+
+        public static void EnableLogging(bool enable)
+        {
+            _loggingEnabled = enable;
+            if (enable)
+            {
+                InitializeLogger();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"✓ Logging activado - Los logs se guardan en archivo .txt");
+                Console.ResetColor();
+            }
+            else
+            {
+                _logWriter?.Close();
+                _logWriter = null;
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("✗ Logging desactivado");
+                Console.ResetColor();
+            }
+        }
+
+        public static void LogToFile(string message)
+        {
+            if (!_loggingEnabled || _logWriter == null) return;
+
+            lock (_logLock)
+            {
+                try
+                {
+                    _logWriter.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] {message}");
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Error escribiendo log: {ex.Message}");
+                    Console.ResetColor();
+                }
+            }
+        }
+
+        public static void LogRequest(string model, string input)
+        {
+            if (!_loggingEnabled) return;
+            
+            var logMessage = $"[REQUEST] Modelo: {model}\n" +
+                           $"[INPUT] {input}\n" +
+                           $"[TIMESTAMP] {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\n" +
+                           "---";
+            LogToFile(logMessage);
+        }
+
+        public static void LogResponse(string model, string rawResponse, ThinkingResponse? parsedResponse = null)
+        {
+            if (!_loggingEnabled) return;
+
+            var logMessage = $"[RESPONSE] Modelo: {model}\n" +
+                           $"[RAW DATA]\n{rawResponse}\n";
+
+            if (parsedResponse != null)
+            {
+                if (parsedResponse.HasThinking)
+                {
+                    logMessage += $"[THINKING]\n{parsedResponse.Thinking}\n";
+                }
+                if (parsedResponse.HasResponse)
+                {
+                    logMessage += $"[FINAL RESPONSE]\n{parsedResponse.Response}\n";
+                }
+            }
+            
+            logMessage += "--- END RESPONSE ---";
+            LogToFile(logMessage);
+        }
+
         public static async Task<List<ModelInfo>> GetModelsAsync(string baseUrl)
         {
             var models = new List<ModelInfo>();
@@ -52,11 +152,14 @@ namespace EngineConsole
                 Console.WriteLine("=== Obteniendo modelos disponibles ===");
                 Console.ResetColor();
 
+                LogToFile($"Obteniendo modelos de: {baseUrl}");
+
                 var response = await Http.GetAsync($"{baseUrl.TrimEnd('/')}/v1/models");
                 
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
+                    LogToFile($"Respuesta modelos RAW: {json}");
                     
                     if (!string.IsNullOrWhiteSpace(json))
                     {
@@ -64,10 +167,8 @@ namespace EngineConsole
                         {
                             using var doc = JsonDocument.Parse(json);
                             
-                            // Intentar diferentes estructuras de respuesta
                             if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array)
                             {
-                                // Estructura: { "data": [ { "id": "...", ... } ] }
                                 foreach (var modelElement in data.EnumerateArray())
                                 {
                                     var model = new ModelInfo();
@@ -78,7 +179,7 @@ namespace EngineConsole
                                     if (modelElement.TryGetProperty("name", out var name))
                                         model.Name = name.GetString() ?? string.Empty;
                                     else
-                                        model.Name = model.Id; // Usar ID como nombre si no hay name
+                                        model.Name = model.Id;
                                     
                                     if (modelElement.TryGetProperty("description", out var description))
                                         model.Description = description.GetString() ?? string.Empty;
@@ -89,7 +190,6 @@ namespace EngineConsole
                             }
                             else if (doc.RootElement.ValueKind == JsonValueKind.Array)
                             {
-                                // Estructura: [ { "id": "...", ... } ]
                                 foreach (var modelElement in doc.RootElement.EnumerateArray())
                                 {
                                     var model = new ModelInfo();
@@ -109,17 +209,12 @@ namespace EngineConsole
                                         models.Add(model);
                                 }
                             }
-                            else
-                            {
-                                // Estructura diferente, mostrar debug
-                                Console.ForegroundColor = ConsoleColor.DarkYellow;
-                                Console.WriteLine("Estructura de respuesta no reconocida:");
-                                Console.WriteLine(json);
-                                Console.ResetColor();
-                            }
+                            
+                            LogToFile($"Modelos encontrados: {models.Count}");
                         }
                         catch (JsonException ex)
                         {
+                            LogToFile($"ERROR Parseando modelos: {ex.Message}");
                             Console.ForegroundColor = ConsoleColor.Red;
                             Console.WriteLine($"Error parseando respuesta de modelos: {ex.Message}");
                             Console.ResetColor();
@@ -128,9 +223,10 @@ namespace EngineConsole
                 }
                 else
                 {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    LogToFile($"ERROR Obteniendo modelos: {response.StatusCode} - {errorContent}");
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine($"Error obteniendo modelos: {response.StatusCode}");
-                    var errorContent = await response.Content.ReadAsStringAsync();
                     if (!string.IsNullOrEmpty(errorContent))
                     {
                         Console.WriteLine($"Detalles: {errorContent}");
@@ -140,12 +236,46 @@ namespace EngineConsole
             }
             catch (Exception ex)
             {
+                LogToFile($"EXCEPCIÓN Obteniendo modelos: {ex.Message}");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Error al obtener modelos: {ex.Message}");
                 Console.ResetColor();
             }
 
             return models;
+        }
+
+        public static string ExtractFirstText(string raw)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                if (doc.RootElement.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var msg in output.EnumerateArray())
+                    {
+                        if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var c in content.EnumerateArray())
+                            {
+                                if (c.TryGetProperty("type", out var type) &&
+                                    type.GetString() == "output_text" &&
+                                    c.TryGetProperty("text", out var textProp))
+                                {
+                                    return textProp.GetString() ?? raw;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.DarkYellow;
+                Console.WriteLine($"[WARN] Error parseando respuesta: {ex.Message}");
+                Console.ResetColor();
+            }
+            return raw;
         }
 
         public static async Task<string> InvokeAsync(string baseUrl, string modelId, string input)
@@ -157,6 +287,8 @@ namespace EngineConsole
                 stream = false
             };
 
+            LogRequest(modelId, input);
+
             using var content = new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
             using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl.TrimEnd('/')}/v1/responses")
             {
@@ -166,6 +298,8 @@ namespace EngineConsole
             using var response = await Http.SendAsync(request);
             var raw = await response.Content.ReadAsStringAsync();
             response.EnsureSuccessStatusCode();
+            
+            LogResponse(modelId, raw);
             return raw;
         }
 
@@ -178,6 +312,8 @@ namespace EngineConsole
                 input,
                 stream = true
             };
+
+            LogRequest(modelId, input);
 
             if (showDebug)
             {
@@ -198,6 +334,7 @@ namespace EngineConsole
             if (!response.IsSuccessStatusCode)
             {
                 var errorContent = await response.Content.ReadAsStringAsync();
+                LogToFile($"ERROR HTTP: {response.StatusCode} - {errorContent}");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[ERROR] HTTP {response.StatusCode}: {errorContent}");
                 Console.ResetColor();
@@ -209,7 +346,6 @@ namespace EngineConsole
             using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var reader = new StreamReader(stream);
 
-            // Variables para el procesamiento
             var fullContent = new StringBuilder();
             var rawEvents = new List<string>();
 
@@ -220,8 +356,8 @@ namespace EngineConsole
                 
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
-                // Guardar el evento raw completo
                 rawEvents.Add(line);
+                LogToFile($"[STREAM RAW] {EscapeControlCharacters(line)}");
 
                 if (showDebug)
                 {
@@ -235,6 +371,7 @@ namespace EngineConsole
                 var jsonData = line.Substring("data:".Length).Trim();
                 if (jsonData == "[DONE]") 
                 {
+                    LogToFile("[STREAM] Señal [DONE] recibida");
                     if (showDebug)
                     {
                         Console.ForegroundColor = ConsoleColor.DarkGray;
@@ -258,11 +395,8 @@ namespace EngineConsole
                             var chunk = delta.GetString();
                             if (!string.IsNullOrEmpty(chunk))
                             {
-                                // Procesar caracteres especiales y agregar al contenido
                                 var processedChunk = ProcessSpecialCharacters(chunk);
                                 fullContent.Append(processedChunk);
-                                
-                                // Mostrar en tiempo real
                                 Console.Write(processedChunk);
                             }
                         }
@@ -276,7 +410,6 @@ namespace EngineConsole
 
                     if (showDebug)
                     {
-                        // Mostrar el JSON completo formateado
                         Console.ForegroundColor = ConsoleColor.DarkCyan;
                         Console.WriteLine("[DEBUG JSON COMPLETO]:");
                         Console.WriteLine(FormatJson(jsonData));
@@ -306,8 +439,9 @@ namespace EngineConsole
                 }
             }
 
-            // Procesar el contenido final
             var finalContent = fullContent.ToString();
+            LogToFile($"[STREAM COMPLETO] {EscapeControlCharacters(finalContent)}");
+
             if (showDebug)
             {
                 Console.ForegroundColor = ConsoleColor.Magenta;
@@ -316,8 +450,8 @@ namespace EngineConsole
                 Console.ResetColor();
             }
 
-            // Procesar separación thinking/response
             ProcessFinalContent(finalContent, result);
+            LogResponse(modelId, finalContent, result);
             
             Console.WriteLine();
             return result;
@@ -327,7 +461,6 @@ namespace EngineConsole
         {
             if (string.IsNullOrEmpty(input)) return input;
 
-            // Reemplazar caracteres de control con representaciones legibles
             return Regex.Replace(input, @"[\x00-\x1F\x7F]", match =>
             {
                 var charCode = (int)match.Value[0];
@@ -350,7 +483,6 @@ namespace EngineConsole
         {
             if (string.IsNullOrEmpty(input)) return input;
 
-            // Manejar secuencias comunes de escape
             var processed = Regex.Replace(input, @"\\x([0-9A-Fa-f]{2})", match =>
             {
                 try
@@ -365,7 +497,6 @@ namespace EngineConsole
                 }
             });
 
-            // Manejar otros escapes comunes
             processed = processed.Replace("\\n", "\n")
                                 .Replace("\\r", "\r")
                                 .Replace("\\t", "\t")
@@ -388,13 +519,12 @@ namespace EngineConsole
             }
             catch
             {
-                return json; // Devolver original si no se puede formatear
+                return json;
             }
         }
 
         private static void ProcessFinalContent(string fullContent, ThinkingResponse result)
         {
-            // Algoritmo simplificado y robusto para separar thinking y response
             var (thinking, response) = SimpleContentSeparation(fullContent);
             
             result.Thinking = thinking.Trim();
@@ -406,7 +536,6 @@ namespace EngineConsole
             if (string.IsNullOrWhiteSpace(content))
                 return (string.Empty, string.Empty);
 
-            // Estrategia 1: Buscar transiciones claras basadas en patrones comunes
             var transitionPatterns = new[]
             {
                 @"¡Hola\s*[!]?", @"Hola[!]?\s+", @"Hola,\s+",
@@ -416,7 +545,6 @@ namespace EngineConsole
                 @"\b(Marco|Aurelio|Fórmula|Agua|H₂?O|H2O)\b"
             };
 
-            // Buscar el mejor punto de transición
             int bestTransition = -1;
             
             foreach (var pattern in transitionPatterns)
@@ -428,7 +556,6 @@ namespace EngineConsole
                     {
                         var position = match.Index;
                         
-                        // Validar que sea una transición válida
                         if (IsValidTransitionPoint(content, position))
                         {
                             if (bestTransition == -1 || position < bestTransition)
@@ -438,20 +565,17 @@ namespace EngineConsole
                         }
                     }
                 }
-                catch (ArgumentException ex)
+                catch (ArgumentException)
                 {
-                    // Ignorar patrones inválidos
                     continue;
                 }
             }
 
-            // Estrategia 2: Buscar cambio de inglés a español
             if (bestTransition == -1)
             {
                 bestTransition = FindLanguageTransition(content);
             }
 
-            // Estrategia 3: Buscar el último punto antes de una respuesta en español
             if (bestTransition == -1)
             {
                 bestTransition = FindLastEnglishSegment(content);
@@ -462,7 +586,6 @@ namespace EngineConsole
                 var thinkingPart = content.Substring(0, bestTransition).Trim();
                 var responsePart = content.Substring(bestTransition).Trim();
 
-                // Validar que la separación tenga sentido
                 if (thinkingPart.Length > 10 && responsePart.Length > 5 && 
                     IsMostlyEnglish(thinkingPart) && !IsMostlyEnglish(responsePart))
                 {
@@ -470,7 +593,6 @@ namespace EngineConsole
                 }
             }
 
-            // Fallback: Si no podemos separar, analizar el contenido completo
             return AnalyzeCompleteContent(content);
         }
 
@@ -478,7 +600,6 @@ namespace EngineConsole
         {
             if (position <= 0 || position >= content.Length) return false;
 
-            // Verificar que antes del punto haya principalmente inglés
             var before = content.Substring(0, position);
             var after = content.Substring(position);
 
@@ -487,7 +608,6 @@ namespace EngineConsole
 
         private static int FindLanguageTransition(string content)
         {
-            // Buscar transición de inglés a español usando ventanas
             for (int i = 50; i < content.Length - 50; i += 10)
             {
                 var windowBefore = content.Substring(Math.Max(0, i - 30), Math.Min(30, i));
@@ -503,7 +623,6 @@ namespace EngineConsole
 
         private static int FindLastEnglishSegment(string content)
         {
-            // Buscar el último segmento que sea principalmente inglés
             var sentences = Regex.Split(content, @"(?<=[.!?])\s+");
             var englishCount = 0;
             
@@ -521,7 +640,6 @@ namespace EngineConsole
 
             if (englishCount > 0 && englishCount < sentences.Length)
             {
-                // Reconstruir el contenido hasta el último segmento inglés
                 var thinkingPart = string.Join(" ", sentences.Take(englishCount));
                 return thinkingPart.Length;
             }
@@ -531,16 +649,13 @@ namespace EngineConsole
 
         private static (string thinking, string response) AnalyzeCompleteContent(string content)
         {
-            // Si todo es inglés, es thinking
             if (IsMostlyEnglish(content))
                 return (content, string.Empty);
 
-            // Si hay muy poco inglés al principio, es response
             var firstSentence = GetFirstSentence(content);
             if (!IsMostlyEnglish(firstSentence) || content.Length - firstSentence.Length < 10)
                 return (string.Empty, content);
 
-            // Por defecto, considerar todo como thinking
             return (content, string.Empty);
         }
 
@@ -574,7 +689,7 @@ namespace EngineConsole
             };
 
             var words = Regex.Matches(text.ToLower(), @"\b\w+\b");
-            if (words.Count == 0) return true; // Por defecto, considerar inglés si no hay palabras
+            if (words.Count == 0) return true;
 
             var englishCount = words.Cast<Match>()
                 .Count(match => englishWords.Contains(match.Value));
@@ -582,7 +697,6 @@ namespace EngineConsole
             var spanishCount = words.Cast<Match>()
                 .Count(match => spanishWords.Contains(match.Value));
 
-            // Si hay más palabras en inglés que en español, es inglés
             return englishCount > spanishCount;
         }
 
@@ -621,7 +735,6 @@ namespace EngineConsole
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine($"✓ Test exitoso");
                     
-                    // Mostrar el JSON de respuesta formateado
                     Console.ForegroundColor = ConsoleColor.DarkGray;
                     Console.WriteLine("Respuesta JSON:");
                     try
@@ -654,6 +767,38 @@ namespace EngineConsole
                 Console.ResetColor();
             }
         }
+
+        // Nuevo método para ejecutar múltiples LLMs en paralelo
+        public static async Task<List<(string model, ThinkingResponse result)>> RunMultipleModelsAsync(
+            string baseUrl, List<string> modelIds, string input, bool useStream, bool showDebug = false)
+        {
+            var tasks = modelIds.Select(async modelId =>
+            {
+                try
+                {
+                    ThinkingResponse result;
+                    if (useStream)
+                    {
+                        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+                        result = await StreamAsync(baseUrl, modelId, input, cts.Token, showDebug);
+                    }
+                    else
+                    {
+                        var raw = await InvokeAsync(baseUrl, modelId, input);
+                        result = new ThinkingResponse { Response = ExtractFirstText(raw) };
+                    }
+                    return (modelId, result);
+                }
+                catch (Exception ex)
+                {
+                    LogToFile($"ERROR con modelo {modelId}: {ex.Message}");
+                    return (modelId, new ThinkingResponse { Response = $"Error: {ex.Message}" });
+                }
+            }).ToList();
+
+            var results = await Task.WhenAll(tasks);
+            return results.ToList();
+        }
     }
 
     internal class Program
@@ -661,10 +806,73 @@ namespace EngineConsole
         private const string DefaultModel = "gpt-oss-20b-gpt-5-reasoning-distill";
         private const string DefaultBaseUrl = "http://localhost:1234";
 
+        // Variables para múltiples modelos
+        private static List<string> _activeModels = new List<string> { DefaultModel };
+        private static bool _useMultipleModels = false;
+
+        // Lista de preguntas para testing
+        private static readonly List<TestQuestion> _testQuestions = new()
+        {
+            // Razonamiento y lógica
+            new TestQuestion { Category = "Razonamiento", Question = "Si tengo 3 manzanas y me das 2 más, ¿cuántas manzanas tengo en total?" },
+            new TestQuestion { Category = "Razonamiento", Question = "Explica el concepto de gravedad de manera simple" },
+            new TestQuestion { Category = "Razonamiento", Question = "¿Qué es más pesado: un kilo de plumas o un kilo de plomo?" },
+            new TestQuestion { Category = "Razonamiento", Question = "Si todos los humanos son mortales y Sócrates es humano, ¿entonces Sócrates es mortal?" },
+            new TestQuestion { Category = "Razonamiento", Question = "¿Cuál es la diferencia entre clima y tiempo atmosférico?" },
+            
+            // Matemáticas
+            new TestQuestion { Category = "Matemáticas", Question = "Resuelve: 15 × 8 + 32 ÷ 4" },
+            new TestQuestion { Category = "Matemáticas", Question = "¿Cuál es el área de un círculo con radio 5 cm?" },
+            new TestQuestion { Category = "Matemáticas", Question = "Explica qué es el teorema de Pitágoras" },
+            new TestQuestion { Category = "Matemáticas", Question = "¿Cuál es la fórmula para calcular el volumen de una esfera?" },
+            new TestQuestion { Category = "Matemáticas", Question = "Simplifica la expresión: 3x + 2y - x + 4y" },
+            
+            // Ciencias
+            new TestQuestion { Category = "Ciencias", Question = "¿Qué es la fotosíntesis y por qué es importante?" },
+            new TestQuestion { Category = "Ciencias", Question = "Explica la diferencia entre elementos y compuestos químicos" },
+            new TestQuestion { Category = "Ciencias", Question = "¿Qué es el ADN y qué función cumple?" },
+            new TestQuestion { Category = "Ciencias", Question = "Nombra los planetas del sistema solar en orden" },
+            new TestQuestion { Category = "Ciencias", Question = "¿Qué causa las estaciones del año en la Tierra?" },
+            
+            // Historia y cultura
+            new TestQuestion { Category = "Historia", Question = "¿Quién fue Marco Aurelio y por qué es importante?" },
+            new TestQuestion { Category = "Historia", Question = "Explica brevemente la Revolución Industrial" },
+            new TestQuestion { Category = "Historia", Question = "¿Qué fue la Segunda Guerra Mundial y cuándo ocurrió?" },
+            new TestQuestion { Category = "Historia", Question = "¿Quién descubrió América y en qué año?" },
+            new TestQuestion { Category = "Historia", Question = "Habla sobre la civilización egipcia antigua" },
+            
+            // Literatura y arte
+            new TestQuestion { Category = "Literatura", Question = "¿Quién escribió 'Cien años de soledad'?" },
+            new TestQuestion { Category = "Literatura", Question = "Explica el concepto de realismo mágico" },
+            new TestQuestion { Category = "Literatura", Question = "¿Qué es el Renacimiento en el arte?" },
+            new TestQuestion { Category = "Literatura", Question = "Nombra tres obras importantes de Shakespeare" },
+            new TestQuestion { Category = "Literatura", Question = "¿Quién pintó la Mona Lisa?" },
+            
+            // Tecnología
+            new TestQuestion { Category = "Tecnología", Question = "Explica qué es la inteligencia artificial" },
+            new TestQuestion { Category = "Tecnología", Question = "¿Qué es el machine learning?" },
+            new TestQuestion { Category = "Tecnología", Question = "Diferencias entre Python y JavaScript" },
+            new TestQuestion { Category = "Tecnología", Question = "¿Qué es blockchain y cómo funciona?" },
+            new TestQuestion { Category = "Tecnología", Question = "Explica el concepto de cloud computing" },
+            
+            // Filosofía y ética
+            new TestQuestion { Category = "Filosofía", Question = "¿Qué es el dilema del tranvía en ética?" },
+            new TestQuestion { Category = "Filosofía", Question = "Explica la teoría de las formas de Platón" },
+            new TestQuestion { Category = "Filosofía", Question = "¿Qué significa 'pienso, luego existo'?" },
+            new TestQuestion { Category = "Filosofía", Question = "Diferencias entre ética y moral" },
+            new TestQuestion { Category = "Filosofía", Question = "¿Qué es el utilitarismo?" },
+            
+            // Preguntas prácticas
+            new TestQuestion { Category = "Práctico", Question = "¿Cómo cambiaría una rueda pinchada?" },
+            new TestQuestion { Category = "Práctico", Question = "Explica cómo hacer una presentación efectiva" },
+            new TestQuestion { Category = "Práctico", Question = "¿Cuáles son los pasos para resolver un conflicto?" },
+            new TestQuestion { Category = "Práctico", Question = "Cómo administrar mejor el tiempo" },
+            new TestQuestion { Category = "Práctico", Question = "Consejos para aprender un nuevo idioma" }
+        };
+
         public static async Task Main(string[] args)
         {
             var baseUrl = Environment.GetEnvironmentVariable("LMSTUDIO_URL") ?? DefaultBaseUrl;
-            var modelId = Environment.GetEnvironmentVariable("LMSTUDIO_MODEL") ?? DefaultModel;
             var useStream = false;
             var showDebug = false;
             
@@ -679,32 +887,35 @@ namespace EngineConsole
                 }
             }
 
-            await Engine.TestLmStudioApi(baseUrl, modelId);
+            await Engine.TestLmStudioApi(baseUrl, _activeModels.First());
             Console.WriteLine();
 
             if (args.Length > 0 && !args[0].StartsWith("--"))
             {
                 var inputOnce = string.Join(" ", args.Where(a => !a.StartsWith("--")));
-                await RunOnce(baseUrl, modelId, inputOnce, useStream, showDebug);
+                await RunOnce(baseUrl, _activeModels, inputOnce, useStream, showDebug);
                 return;
             }
 
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("==== ENGINE LLM - CLI (COMANDOS CORREGIDOS) ====");
+            Console.WriteLine("==== ENGINE LLM - CLI (COMANDOS MEJORADOS) ====");
             Console.ResetColor();
-            Console.WriteLine($"Modelo actual:   {modelId}");
-            Console.WriteLine($"Endpoint:        {baseUrl}");
+            Console.WriteLine($"Modelos activos:   {string.Join(", ", _activeModels)}");
+            Console.WriteLine($"Endpoint:          {baseUrl}");
             Console.WriteLine("Comandos:");
-            Console.WriteLine("  /exit       - Salir del programa");
-            Console.WriteLine("  /help       - Mostrar ayuda");
-            Console.WriteLine("  /stream on  - Activar modo streaming");
-            Console.WriteLine("  /stream off - Desactivar modo streaming");
-            Console.WriteLine("  /debug on   - Mostrar logs detallados y JSON raw");
-            Console.WriteLine("  /debug off  - Ocultar logs detallados");
-            Console.WriteLine("  /test       - Probar conexión con LM Studio");
-            Console.WriteLine("  /models     - Listar modelos disponibles");
-            Console.WriteLine("  /model <id> - Cambiar modelo (ej: /model gpt-4)");
-            Console.WriteLine("  /current    - Mostrar modelo actual");
+            Console.WriteLine("  /exit         - Salir del programa");
+            Console.WriteLine("  /help         - Mostrar ayuda");
+            Console.WriteLine("  /clear        - Limpiar pantalla");
+            Console.WriteLine("  /logs on/off  - Activar/desactivar logging a archivo");
+            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming");
+            Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
+            Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
+            Console.WriteLine("  /models       - Listar modelos disponibles");
+            Console.WriteLine("  /model <id>   - Cambiar modelo (ej: /model 1)");
+            Console.WriteLine("  /multi on/off - Activar/desactivar múltiples modelos");
+            Console.WriteLine("  /add <id>     - Agregar modelo a la lista activa");
+            Console.WriteLine("  /remove <id>  - Remover modelo de la lista activa");
+            Console.WriteLine("  /current      - Mostrar modelos activos");
             Console.WriteLine();
 
             while (true)
@@ -717,8 +928,7 @@ namespace EngineConsole
                 line = line.Trim();
                 if (string.IsNullOrEmpty(line)) continue;
                 
-                // Verificar si es un comando
-                var isCommand = ProcessCommand(line, ref baseUrl, ref modelId, ref useStream, ref showDebug);
+                var isCommand = ProcessCommand(line, ref baseUrl, ref useStream, ref showDebug);
                 
                 if (isCommand)
                 {
@@ -726,15 +936,13 @@ namespace EngineConsole
                     continue;
                 }
 
-                // Si no es un comando, enviar al LLM
-                await RunOnce(baseUrl, modelId, line, useStream, showDebug);
+                await RunOnce(baseUrl, _activeModels, line, useStream, showDebug);
                 Console.WriteLine();
             }
         }
 
-        private static bool ProcessCommand(string line, ref string baseUrl, ref string modelId, ref bool useStream, ref bool showDebug)
+        private static bool ProcessCommand(string line, ref string baseUrl, ref bool useStream, ref bool showDebug)
         {
-            // Convertir a minúsculas para comparación case-insensitive
             var lowerLine = line.ToLowerInvariant();
             
             if (lowerLine == "/exit")
@@ -749,6 +957,22 @@ namespace EngineConsole
             if (lowerLine == "/help")
             {
                 ShowHelp();
+                return true;
+            }
+            
+            if (lowerLine == "/clear")
+            {
+                Console.Clear();
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("==== ENGINE LLM - CLI ====");
+                Console.ResetColor();
+                return true;
+            }
+            
+            if (lowerLine.StartsWith("/logs"))
+            {
+                var enable = line.ToLowerInvariant().Contains("on");
+                Engine.EnableLogging(enable);
                 return true;
             }
             
@@ -768,13 +992,13 @@ namespace EngineConsole
             
             if (lowerLine == "/test")
             {
-                _ = Engine.TestLmStudioApi(baseUrl, modelId); // Fire and forget
+                _ = RunTestSuiteAsync(baseUrl, _activeModels, useStream, showDebug);
                 return true;
             }
             
             if (lowerLine == "/models")
             {
-                _ = ListModelsAsync(baseUrl); // Fire and forget
+                _ = ListModelsAsync(baseUrl);
                 return true;
             }
             
@@ -784,7 +1008,7 @@ namespace EngineConsole
                 if (parts.Length >= 2)
                 {
                     var newModel = parts[1];
-                    return ChangeModel(baseUrl, newModel, ref modelId);
+                    return ChangeModel(baseUrl, newModel);
                 }
                 else
                 {
@@ -796,15 +1020,47 @@ namespace EngineConsole
                 }
             }
             
+            if (lowerLine.StartsWith("/multi"))
+            {
+                _useMultipleModels = line.ToLowerInvariant().Contains("on");
+                Console.WriteLine($"Múltiples modelos {(_useMultipleModels ? "activado" : "desactivado")}.");
+                if (_useMultipleModels)
+                {
+                    Console.WriteLine($"Modelos activos: {string.Join(", ", _activeModels)}");
+                }
+                return true;
+            }
+            
+            if (lowerLine.StartsWith("/add "))
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                {
+                    var modelToAdd = parts[1];
+                    AddModel(baseUrl, modelToAdd);
+                }
+                return true;
+            }
+            
+            if (lowerLine.StartsWith("/remove "))
+            {
+                var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2)
+                {
+                    var modelToRemove = parts[1];
+                    RemoveModel(modelToRemove);
+                }
+                return true;
+            }
+            
             if (lowerLine == "/current")
             {
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"Modelo actual: {modelId}");
+                Console.WriteLine($"Modelos activos: {string.Join(", ", _activeModels)}");
                 Console.ResetColor();
                 return true;
             }
 
-            // Si no es un comando reconocido
             if (line.StartsWith("/"))
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -814,7 +1070,6 @@ namespace EngineConsole
                 return true;
             }
 
-            // No es un comando
             return false;
         }
 
@@ -851,21 +1106,19 @@ namespace EngineConsole
             }
         }
 
-        private static bool ChangeModel(string baseUrl, string newModel, ref string modelId)
+        private static bool ChangeModel(string baseUrl, string newModel)
         {
-            // Si es un número, buscar en la lista de modelos
             if (int.TryParse(newModel, out int modelNumber))
             {
-                // Necesitamos obtener los modelos de forma síncrona para esta operación
                 var modelsTask = Engine.GetModelsAsync(baseUrl);
-                modelsTask.Wait(); // Esto no es ideal, pero funciona para un CLI
+                modelsTask.Wait();
                 var models = modelsTask.Result;
                 
                 if (modelNumber > 0 && modelNumber <= models.Count)
                 {
-                    modelId = models[modelNumber - 1].Id;
+                    _activeModels = new List<string> { models[modelNumber - 1].Id };
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine($"Modelo cambiado a: {modelId}");
+                    Console.WriteLine($"Modelo cambiado a: {_activeModels.First()}");
                     Console.ResetColor();
                     return true;
                 }
@@ -879,156 +1132,285 @@ namespace EngineConsole
             }
             else
             {
-                // Asumir que es un ID de modelo
-                modelId = newModel;
+                _activeModels = new List<string> { newModel };
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"Modelo cambiado a: {modelId}");
+                Console.WriteLine($"Modelo cambiado a: {_activeModels.First()}");
                 Console.ResetColor();
                 return true;
             }
         }
 
+        private static void AddModel(string baseUrl, string modelToAdd)
+        {
+            if (int.TryParse(modelToAdd, out int modelNumber))
+            {
+                var modelsTask = Engine.GetModelsAsync(baseUrl);
+                modelsTask.Wait();
+                var models = modelsTask.Result;
+                
+                if (modelNumber > 0 && modelNumber <= models.Count)
+                {
+                    var modelId = models[modelNumber - 1].Id;
+                    if (!_activeModels.Contains(modelId))
+                    {
+                        _activeModels.Add(modelId);
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"Modelo agregado: {modelId}");
+                        Console.ResetColor();
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"El modelo {modelId} ya está en la lista activa.");
+                        Console.ResetColor();
+                    }
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"Número de modelo inválido.");
+                    Console.ResetColor();
+                }
+            }
+            else
+            {
+                if (!_activeModels.Contains(modelToAdd))
+                {
+                    _activeModels.Add(modelToAdd);
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"Modelo agregado: {modelToAdd}");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"El modelo {modelToAdd} ya está en la lista activa.");
+                    Console.ResetColor();
+                }
+            }
+            
+            Console.WriteLine($"Modelos activos: {string.Join(", ", _activeModels)}");
+        }
+
+        private static void RemoveModel(string modelToRemove)
+        {
+            if (_activeModels.Count <= 1)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("No se puede remover el último modelo activo.");
+                Console.ResetColor();
+                return;
+            }
+
+            if (int.TryParse(modelToRemove, out int modelNumber) && modelNumber > 0 && modelNumber <= _activeModels.Count)
+            {
+                var removedModel = _activeModels[modelNumber - 1];
+                _activeModels.RemoveAt(modelNumber - 1);
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Modelo removido: {removedModel}");
+                Console.ResetColor();
+            }
+            else if (_activeModels.Contains(modelToRemove))
+            {
+                _activeModels.Remove(modelToRemove);
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Modelo removido: {modelToRemove}");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Modelo no encontrado en la lista activa.");
+                Console.ResetColor();
+            }
+            
+            Console.WriteLine($"Modelos activos: {string.Join(", ", _activeModels)}");
+        }
+
         private static void ShowHelp()
         {
             Console.WriteLine("Comandos disponibles:");
-            Console.WriteLine("  /exit       - Salir del programa");
-            Console.WriteLine("  /help       - Mostrar esta ayuda");
-            Console.WriteLine("  /stream on  - Activar modo streaming");
-            Console.WriteLine("  /stream off - Desactivar modo streaming");
-            Console.WriteLine("  /debug on   - Mostrar logs detallados y JSON raw");
-            Console.WriteLine("  /debug off  - Ocultar logs detallados");
-            Console.WriteLine("  /test       - Probar conexión con LM Studio");
-            Console.WriteLine("  /models     - Listar modelos disponibles");
-            Console.WriteLine("  /model <id> - Cambiar modelo (ej: /model gpt-4)");
-            Console.WriteLine("  /current    - Mostrar modelo actual");
+            Console.WriteLine("  /exit         - Salir del programa");
+            Console.WriteLine("  /help         - Mostrar esta ayuda");
+            Console.WriteLine("  /clear        - Limpiar pantalla");
+            Console.WriteLine("  /logs on/off  - Activar/desactivar logging a archivo");
+            Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming");
+            Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
+            Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
+            Console.WriteLine("  /models       - Listar modelos disponibles");
+            Console.WriteLine("  /model <id>   - Cambiar modelo (ej: /model 1)");
+            Console.WriteLine("  /multi on/off - Activar/desactivar múltiples modelos");
+            Console.WriteLine("  /add <id>     - Agregar modelo a la lista activa");
+            Console.WriteLine("  /remove <id>  - Remover modelo de la lista activa");
+            Console.WriteLine("  /current      - Mostrar modelos activos");
             Console.WriteLine("");
             Console.WriteLine("Ejemplos:");
             Console.WriteLine("  /models                    - Lista todos los modelos");
             Console.WriteLine("  /model 1                   - Selecciona el modelo número 1");
-            Console.WriteLine("  /model gpt-4               - Selecciona el modelo con ID 'gpt-4'");
-            Console.WriteLine("  /stream on                 - Activa el modo streaming");
-            Console.WriteLine("  Hola, ¿cómo estás?         - Envía un mensaje al LLM");
+            Console.WriteLine("  /add 2                     - Agrega el modelo número 2 a la lista activa");
+            Console.WriteLine("  /multi on                  - Activa el modo múltiples modelos");
+            Console.WriteLine("  /test                      - Ejecuta 30+ preguntas de prueba");
+            Console.WriteLine("  /logs on                   - Activa logging a archivo");
+            Console.WriteLine("  /clear                     - Limpia la pantalla");
         }
 
-        private static async Task RunOnce(string baseUrl, string modelId, string input, bool useStream, bool showDebug = false)
+        private static async Task RunOnce(string baseUrl, List<string> modelIds, string input, bool useStream, bool showDebug = false)
         {
             try
             {
                 var sw = Stopwatch.StartNew();
                 
-                if (useStream)
+                if (modelIds.Count > 1)
                 {
-                    Console.ForegroundColor = ConsoleColor.DarkYellow;
-                    Console.WriteLine($"[Enviando al LLM en modo streaming...]");
-                    if (showDebug)
-                    {
-                        Console.WriteLine($"[DEBUG INPUT]: {input}");
-                        Console.WriteLine($"[DEBUG MODEL]: {modelId}");
-                    }
-                    Console.ResetColor();
-
-                    using var cts = new CancellationTokenSource();
-                    
-                    var ticker = Task.Run(async () =>
-                    {
-                        var startTime = DateTime.Now;
-                        while (!cts.IsCancellationRequested)
-                        {
-                            await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
-                            if (!cts.IsCancellationRequested)
-                            {
-                                var elapsed = DateTime.Now - startTime;
-                                Console.ForegroundColor = ConsoleColor.DarkGray;
-                                Console.Write($"\r[Tiempo: {elapsed:mm\\:ss}]");
-                                Console.ResetColor();
-                            }
-                        }
-                    });
-
-                    var result = await Engine.StreamAsync(baseUrl, modelId, input, cts.Token, showDebug);
-                    cts.Cancel();
-                    
-                    try { await ticker; } catch { }
-
-                    // Mostrar resultados estructurados
-                    Console.WriteLine();
+                    // Modo múltiples modelos
                     Console.ForegroundColor = ConsoleColor.Cyan;
-                    Console.WriteLine("\n=== RESULTADO ESTRUCTURADO ===");
+                    Console.WriteLine($"[Ejecutando en {modelIds.Count} modelos: {string.Join(", ", modelIds)}]");
+                    Console.ResetColor();
+
+                    var results = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, input, useStream, showDebug);
+                    
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine("\n=== COMPARACIÓN DE RESPUESTAS ===");
                     Console.ResetColor();
                     
-                    if (result.HasThinking)
+                    foreach (var (model, result) in results)
                     {
-                        Console.ForegroundColor = ConsoleColor.DarkYellow;
-                        Console.WriteLine("[PENSAMIENTO]:");
-                        Console.WriteLine(result.Thinking);
-                        Console.WriteLine();
-                    }
-                    
-                    if (result.HasResponse)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("[RESPUESTA]:");
-                        Console.WriteLine(result.Response);
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"\n--- {model} ---");
                         Console.ResetColor();
+                        
+                        if (result.HasThinking)
+                        {
+                            Console.ForegroundColor = ConsoleColor.DarkGray;
+                            Console.WriteLine("[THINKING]:");
+                            Console.WriteLine(result.Thinking);
+                            Console.WriteLine();
+                            Console.ResetColor();
+                        }
+                        
+                        if (result.HasResponse)
+                        {
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine("[RESPONSE]:");
+                            Console.WriteLine(result.Response);
+                            Console.ResetColor();
+                        }
                     }
-
-                    if (!result.HasThinking && !result.HasResponse)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine("No se recibió contenido del LLM.");
-                        Console.ResetColor();
-                    }
-
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.WriteLine($"\nDuración total: {sw.Elapsed:mm\\:ss}");
-                    Console.ResetColor();
                 }
                 else
                 {
-                    Console.ForegroundColor = ConsoleColor.DarkYellow;
-                    Console.WriteLine($"[Enviando al LLM...]");
-                    Console.ResetColor();
-
-                    var raw = await Engine.InvokeAsync(baseUrl, modelId, input);
-                    
-                    if (showDebug)
+                    // Modo single model
+                    var modelId = modelIds.First();
+                    if (useStream)
                     {
-                        Console.ForegroundColor = ConsoleColor.DarkCyan;
-                        Console.WriteLine("[DEBUG RAW RESPONSE]:");
-                        try
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.WriteLine($"[Enviando al LLM en modo streaming...]");
+                        if (showDebug)
                         {
-                            var formattedJson = JsonSerializer.Serialize(
-                                JsonDocument.Parse(raw).RootElement,
-                                new JsonSerializerOptions { WriteIndented = true }
-                            );
-                            Console.WriteLine(formattedJson);
-                        }
-                        catch
-                        {
-                            Console.WriteLine(raw);
+                            Console.WriteLine($"[DEBUG INPUT]: {input}");
+                            Console.WriteLine($"[DEBUG MODEL]: {modelId}");
                         }
                         Console.ResetColor();
-                    }
 
-                    var text = ExtractFirstText(raw);
+                        using var cts = new CancellationTokenSource();
+                        
+                        var ticker = Task.Run(async () =>
+                        {
+                            var startTime = DateTime.Now;
+                            while (!cts.IsCancellationRequested)
+                            {
+                                await Task.Delay(1000, cts.Token).ContinueWith(_ => { });
+                                if (!cts.IsCancellationRequested)
+                                {
+                                    var elapsed = DateTime.Now - startTime;
+                                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                                    Console.Write($"\r[Tiempo: {elapsed:mm\\:ss}]");
+                                    Console.ResetColor();
+                                }
+                            }
+                        });
 
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("=== Respuesta ===");
-                    Console.ResetColor();
-                    if (string.IsNullOrWhiteSpace(text))
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine("[Respuesta vacía del LLM]");
+                        var result = await Engine.StreamAsync(baseUrl, modelId, input, cts.Token, showDebug);
+                        cts.Cancel();
+                        
+                        try { await ticker; } catch { }
+
+                        Console.WriteLine();
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.WriteLine("\n=== RESULTADO ESTRUCTURADO ===");
                         Console.ResetColor();
+                        
+                        if (result.HasThinking)
+                        {
+                            Console.ForegroundColor = ConsoleColor.DarkYellow;
+                            Console.WriteLine("[PENSAMIENTO]:");
+                            Console.WriteLine(result.Thinking);
+                            Console.WriteLine();
+                        }
+                        
+                        if (result.HasResponse)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("[RESPUESTA]:");
+                            Console.WriteLine(result.Response);
+                            Console.ResetColor();
+                        }
+
+                        if (!result.HasThinking && !result.HasResponse)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("No se recibió contenido del LLM.");
+                            Console.ResetColor();
+                        }
                     }
                     else
                     {
-                        Console.WriteLine(text);
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.WriteLine($"[Enviando al LLM...]");
+                        Console.ResetColor();
+
+                        var raw = await Engine.InvokeAsync(baseUrl, modelId, input);
+                        
+                        if (showDebug)
+                        {
+                            Console.ForegroundColor = ConsoleColor.DarkCyan;
+                            Console.WriteLine("[DEBUG RAW RESPONSE]:");
+                            try
+                            {
+                                var formattedJson = JsonSerializer.Serialize(
+                                    JsonDocument.Parse(raw).RootElement,
+                                    new JsonSerializerOptions { WriteIndented = true }
+                                );
+                                Console.WriteLine(formattedJson);
+                            }
+                            catch
+                            {
+                                Console.WriteLine(raw);
+                            }
+                            Console.ResetColor();
+                        }
+
+                    var text = Engine.ExtractFirstText(raw);
+
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine("=== Respuesta ===");
+                        Console.ResetColor();
+                        if (string.IsNullOrWhiteSpace(text))
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("[Respuesta vacía del LLM]");
+                            Console.ResetColor();
+                        }
+                        else
+                        {
+                            Console.WriteLine(text);
+                        }
                     }
-                    Console.ForegroundColor = ConsoleColor.DarkGray;
-                    Console.WriteLine($"(Duración: {sw.Elapsed:mm\\:ss})");
-                    Console.ResetColor();
                 }
+
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"\nDuración total: {sw.Elapsed:mm\\:ss}");
+                Console.ResetColor();
             }
             catch (Exception ex)
             {
@@ -1042,37 +1424,104 @@ namespace EngineConsole
             }
         }
 
-        private static string ExtractFirstText(string raw)
+        private static async Task RunTestSuiteAsync(string baseUrl, List<string> modelIds, bool useStream, bool showDebug)
         {
-            try
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"=== INICIANDO SUITE DE PRUEBAS ===");
+            Console.WriteLine($"Modelos: {string.Join(", ", modelIds)}");
+            Console.WriteLine($"Preguntas: {_testQuestions.Count}");
+            Console.WriteLine($"Streaming: {(useStream ? "SI" : "NO")}");
+            Console.ResetColor();
+            
+            Engine.LogToFile($"=== INICIO SUITE PRUEBAS ===");
+            Engine.LogToFile($"Modelos: {string.Join(", ", modelIds)}");
+            Engine.LogToFile($"Total preguntas: {_testQuestions.Count}");
+
+            var totalSw = Stopwatch.StartNew();
+            var results = new List<(string model, string question, ThinkingResponse response, TimeSpan duration)>();
+
+            for (int i = 0; i < _testQuestions.Count; i++)
             {
-                using var doc = JsonDocument.Parse(raw);
-                if (doc.RootElement.TryGetProperty("output", out var output) && output.ValueKind == JsonValueKind.Array)
+                var question = _testQuestions[i];
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"\n--- Pregunta {i+1}/{_testQuestions.Count} ({question.Category}) ---");
+                Console.WriteLine($"📝 {question.Question}");
+                Console.ResetColor();
+
+                Engine.LogToFile($"--- PREGUNTA {i+1}: {question.Category} ---");
+                Engine.LogToFile($"Q: {question.Question}");
+
+                var questionSw = Stopwatch.StartNew();
+                
+                try
                 {
-                    foreach (var msg in output.EnumerateArray())
+                    var responses = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, question.Question, useStream, showDebug);
+                    
+                    foreach (var (model, response) in responses)
                     {
-                        if (msg.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+                        results.Add((model, question.Question, response, questionSw.Elapsed));
+                        
+                        Console.ForegroundColor = ConsoleColor.Green;
+                        Console.WriteLine($"\n✅ {model} - {questionSw.Elapsed:mm\\:ss}");
+                        Console.ResetColor();
+                        
+                        if (response.HasThinking)
                         {
-                            foreach (var c in content.EnumerateArray())
-                            {
-                                if (c.TryGetProperty("type", out var type) &&
-                                    type.GetString() == "output_text" &&
-                                    c.TryGetProperty("text", out var textProp))
-                                {
-                                    return textProp.GetString() ?? raw;
-                                }
-                            }
+                            Console.ForegroundColor = ConsoleColor.DarkGray;
+                            Console.WriteLine("[Thinking]: " + (response.Thinking.Length > 100 ? 
+                                response.Thinking.Substring(0, 100) + "..." : response.Thinking));
+                        }
+                        
+                        if (response.HasResponse)
+                        {
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine("[Response]: " + (response.Response.Length > 150 ? 
+                                response.Response.Substring(0, 150) + "..." : response.Response));
                         }
                     }
                 }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"❌ Error en pregunta {i+1}: {ex.Message}");
+                    Console.ResetColor();
+                    Engine.LogToFile($"ERROR: {ex.Message}");
+                }
+
+                // Pequeña pausa entre preguntas
+                await Task.Delay(1000);
             }
-            catch (Exception ex)
+
+            totalSw.Stop();
+            
+            // Reporte final
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"\n=== SUITE DE PRUEBAS COMPLETADA ===");
+            Console.WriteLine($"Duración total: {totalSw.Elapsed:mm\\:ss}");
+            Console.WriteLine($"Preguntas: {_testQuestions.Count}");
+            Console.WriteLine($"Modelos: {modelIds.Count}");
+            Console.WriteLine($"Respuestas totales: {results.Count}");
+            Console.ResetColor();
+
+            Engine.LogToFile($"=== FIN SUITE PRUEBAS ===");
+            Engine.LogToFile($"Duración total: {totalSw.Elapsed:mm\\:ss}");
+            Engine.LogToFile($"Respuestas totales: {results.Count}");
+
+            // Mostrar resumen por modelo
+            foreach (var model in modelIds)
             {
-                Console.ForegroundColor = ConsoleColor.DarkYellow;
-                Console.WriteLine($"[WARN] Error parseando respuesta: {ex.Message}");
+                var modelResults = results.Where(r => r.model == model).ToList();
+                var avgTime = modelResults.Any() ? 
+                    TimeSpan.FromMilliseconds(modelResults.Average(r => r.duration.TotalMilliseconds)) : 
+                    TimeSpan.Zero;
+                
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n📊 {model}:");
+                Console.WriteLine($"   Respuestas: {modelResults.Count}/{_testQuestions.Count}");
+                Console.WriteLine($"   Tiempo promedio: {avgTime:mm\\:ss\\.ff}");
                 Console.ResetColor();
             }
-            return raw;
         }
+
     }
 }

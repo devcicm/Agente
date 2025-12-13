@@ -1,0 +1,37 @@
+{
+  "name": "agente-npm",
+  "version": "1.0.0",
+  "description": "Agente CLI con Node.js para interacciИn con LLM",
+  "main": "src/agent/agent-with-logs.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "logs": "node src/agent/agent-with-logs.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "node scripts/build.js"
+  },
+  "bin": {
+    "agente-npm": "./bin/agente-npm.js"
+  },
+  "keywords": [
+    "llm",
+    "cli",
+    "agent",
+    "ai"
+  ],
+  "author": "Carlos Ivan",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "0.21.4",
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "ink": "^3.0.0",
+    "react": "^17.0.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2",
+    "pkg": "^5.8.1"
+  }
+}
+
