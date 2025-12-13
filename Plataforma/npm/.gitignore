@@ -2,3 +2,5 @@ node_modules/
 logs/
 .env
 agente-npm*.exe
+*.bak
+test-compiled.bat
