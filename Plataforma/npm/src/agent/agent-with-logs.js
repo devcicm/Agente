@@ -114,31 +114,32 @@ const USE_EMOJI =
 
 // Icons en escapes unicode (pkg-safe).
 
+// Usar emojis simples más compatibles con Windows
 const ICON = USE_EMOJI ? {
 
-  ok:     '\u2705',           // ?
+  ok:     '\u2713',           // ✓ (checkmark simple, más compatible)
 
-  err:    '\u274C',           // ?
+  err:    '\u2717',           // ✗ (X simple, más compatible)
 
-  warn:   '\u26A0\uFE0F',     // ??
+  warn:   '\u26A0',           // ⚠ (sin variante selector)
 
-  info:   '\u2139\uFE0F',     // ??
+  info:   '\u2139',           // ℹ (sin variante selector)
 
-  prompt: '\uD83D\uDCDD',     // ??
+  prompt: '\u276F',           // ❯ (chevron derecho)
 
-  reply:  '\uD83D\uDCAC',     // ??
+  reply:  '\u27A4',           // ➤ (flecha derecha)
 
-  usage:  '\uD83D\uDCCA',     // ??
+  usage:  '\u2022',           // • (bullet)
 
-  raw:    '\uD83E\uDDFE',     // ??
+  raw:    '\u2637',           // ☷ (trigram, o usar #)
 
-  model:  '\uD83C\uDFAF',     // ??
+  model:  '\u25C6',           // ◆ (diamante)
 
-  net:    '\uD83C\uDF10',     // ??
+  net:    '\u2316',           // ⌖ (target/red)
 
-  mode:   '\u26A1',           // ?
+  mode:   '\u26A1',           // ⚡ (rayo)
 
-  bug:    '\uD83D\uDC1E',     // ??
+  bug:    '\u2699',           // ⚙ (engranaje para debug)
 
 } : {
 
