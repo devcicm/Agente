@@ -1,4 +1,45 @@
+# ============================================
+# Agentes de IA y Configuraciones Locales
+# ============================================
 .claude/
+.cursor/
+.aider/
+.copilot/
+.vscode/
+.idea/
+*.code-workspace
+
+# ============================================
+# Credenciales y Secrets
+# ============================================
+.env
+.env.*
+!.env.example
+*.env
+credentials.json
+secrets.json
+secret.*
+secrets.*
+*credentials*
+*secret*
+*api*key*
+*apikey*
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+config.local.*
+settings.local.*
+
+# ============================================
+# GitHub (workflows pueden contener secrets)
+# ============================================
+.github/
+
+# ============================================
+# Build artifacts y temporales
+# ============================================
 bin/
 obj/
 *.user
@@ -8,4 +49,21 @@ obj/
 *.pdb
 *.exe
 *.bak
+*.tmp
+*.temp
+node_modules/
+dist/
+build/
+
+# ============================================
+# Repositorios clonados
+# ============================================
 repo/
+
+# ============================================
+# Outputs de TTS (archivos generados)
+# ============================================
+tts-output-*.wav
+test-tts-*.wav
+output-*.wav
+*-output.wav
