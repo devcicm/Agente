@@ -30,7 +30,7 @@ const {
 } = require('../formatters/printer');
 
 // Cliente TTS VibeVoice
-const VibeVoiceClient = require('../../tts/vibevoice-client');
+const VibeVoiceClient = require('../tts/vibevoice-client');
 
 
 

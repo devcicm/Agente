@@ -915,7 +915,7 @@ namespace EngineConsole
             Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming (usa: /stream on tts para TTS)");
             Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
             Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
-            Console.WriteLine("  /models       - Listar modelos disponibles");
+            Console.WriteLine("  /models [n|id]- Listar modelos (o seleccionar: /models 1)");
             Console.WriteLine("  /model <id>   - Cambiar modelo (ej: /model 1)");
             Console.WriteLine("  /multi on/off - Activar/desactivar múltiples modelos");
             Console.WriteLine("  /add <id>     - Agregar modelo a la lista activa");
@@ -1032,10 +1032,24 @@ namespace EngineConsole
                 return true;
             }
             
-            if (lowerLine == "/models")
+            if (lowerLine.StartsWith("/models", StringComparison.OrdinalIgnoreCase))
             {
-                _ = ListModelsAsync(baseUrl);
-                return true;
+                var parts = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 1)
+                {
+                    _ = ListModelsAsync(baseUrl);
+                    return true;
+                }
+
+                var selection = parts[1].Trim();
+                if (string.IsNullOrWhiteSpace(selection))
+                {
+                    _ = ListModelsAsync(baseUrl);
+                    return true;
+                }
+
+                // UX: permitir /models <n|id> como alias de /model <n|id>
+                return ChangeModel(baseUrl, selection);
             }
             
             if (lowerLine.StartsWith("/model "))
@@ -1273,7 +1287,7 @@ namespace EngineConsole
             Console.WriteLine("  /stream on/off- Activar/desactivar modo streaming (usa: /stream on tts para TTS)");
             Console.WriteLine("  /debug on/off - Mostrar/ocultar logs detallados");
             Console.WriteLine("  /test         - Ejecutar preguntas de prueba en modelos");
-            Console.WriteLine("  /models       - Listar modelos disponibles");
+            Console.WriteLine("  /models [n|id]- Listar modelos (o seleccionar: /models 1)");
             Console.WriteLine("  /model <id>   - Cambiar modelo (ej: /model 1)");
             Console.WriteLine("  /multi on/off - Activar/desactivar múltiples modelos");
             Console.WriteLine("  /add <id>     - Agregar modelo a la lista activa");
@@ -1282,6 +1296,7 @@ namespace EngineConsole
             Console.WriteLine("");
             Console.WriteLine("Ejemplos:");
             Console.WriteLine("  /models                    - Lista todos los modelos");
+            Console.WriteLine("  /models 1                  - Alias de /model 1");
             Console.WriteLine("  /model 1                   - Selecciona el modelo número 1");
             Console.WriteLine("  /add 2                     - Agrega el modelo número 2 a la lista activa");
             Console.WriteLine("  /multi on                  - Activa el modo múltiples modelos");
