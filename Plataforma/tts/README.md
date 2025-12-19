@@ -15,10 +15,14 @@ VibeVoice es un sistema TTS de última generación desarrollado por Microsoft qu
 
 ```
 Plataforma/tts/
-├── vibevoice-client.js         # Cliente Node.js (WebSocket)
+├── vibevoice-client.js          # Cliente Node.js (WebSocket)
 ├── test-vibevoice.js            # Suite de tests
-├── start-vibevoice-server.bat   # Iniciar servidor (Windows)
-├── start-vibevoice-server.sh    # Iniciar servidor (Linux/Mac)
+├── run-vibevoice-server.py      # Lanzador Python mejorado con validaciones
+├── start-vibevoice-server.bat   # Script Windows Batch
+├── start-vibevoice-server.sh    # Script Linux/Mac Bash
+├── start-vibevoice-server.ps1   # Script Windows PowerShell (moderno)
+├── pyshim/
+│   └── sitecustomize.py         # Shim de compatibilidad torch.xpu
 └── README.md                    # Esta documentación
 ```
 
@@ -35,20 +39,59 @@ npm install ws
 
 ### 2. Iniciar el Servidor VibeVoice
 
-**Windows:**
+**Opción A: Windows Batch Script (Simple)**
 ```bash
 start-vibevoice-server.bat
 ```
 
-**Linux/Mac:**
+**Opción B: Windows PowerShell (Recomendado - con opciones)**
+```powershell
+# Básico
+.\start-vibevoice-server.ps1
+
+# Con opciones
+.\start-vibevoice-server.ps1 -Device cuda -Port 3001
+
+# Con auto-clone de VibeVoice
+.\start-vibevoice-server.ps1 -AutoClone
+
+# Ver ayuda
+.\start-vibevoice-server.ps1 -Help
+```
+
+**Opción C: Linux/Mac Bash Script**
 ```bash
 chmod +x start-vibevoice-server.sh
+./start-vibevoice-server.sh
+
+# Con variables de entorno
+export VIBEVOICE_DEVICE=mps  # Para Mac M1+
+export VIBEVOICE_PORT=3001
 ./start-vibevoice-server.sh
 ```
 
 El servidor se iniciará en `http://localhost:3000` con WebSocket en `ws://localhost:3000/stream`.
 
-**Nota**: En la primera ejecución, el servidor descargará automáticamente el modelo (~2GB) desde Hugging Face.
+**Nota**:
+- En la primera ejecución, el servidor descargará automáticamente el modelo (~2GB) desde Hugging Face
+- Si VibeVoice no está clonado, el script `.bat` y `.sh` lo clonarán automáticamente en `Agente/repo/VibeVoice`
+- El script PowerShell requiere el flag `-AutoClone` para clonar automáticamente
+
+**Estructura de directorios esperada:**
+```
+Agente/
+├── Plataforma/
+│   └── tts/                         # Scripts TTS aquí
+│       ├── start-vibevoice-server.bat
+│       ├── start-vibevoice-server.sh
+│       ├── start-vibevoice-server.ps1
+│       └── run-vibevoice-server.py
+└── repo/
+    └── VibeVoice/                   # Repositorio clonado aquí
+        └── demo/
+            └── web/
+                └── app.py           # Servidor FastAPI
+```
 
 ### 3. Ejecutar Tests
 
@@ -153,21 +196,62 @@ El servidor incluye las siguientes voces preconfiguradas:
 
 Puedes configurar el servidor con variables de entorno:
 
-**Windows (PowerShell):**
+**Windows (Batch):**
+```batch
+set VIBEVOICE_MODEL=microsoft/VibeVoice-Realtime-0.5B
+set VIBEVOICE_PORT=3000
+set VIBEVOICE_DEVICE=cpu
+start-vibevoice-server.bat
+```
+
+**Windows (PowerShell con parámetros - Recomendado):**
 ```powershell
+# Opción 1: Con parámetros
+.\start-vibevoice-server.ps1 -Model "microsoft/VibeVoice-Realtime-0.5B" -Port 3000 -Device cuda
+
+# Opción 2: Con variables de entorno
 $env:VIBEVOICE_MODEL = "microsoft/VibeVoice-Realtime-0.5B"
 $env:VIBEVOICE_PORT = "3000"
-$env:VIBEVOICE_DEVICE = "cuda"  # cuda, cpu, o mps (Mac)
-.\start-vibevoice-server.bat
+$env:VIBEVOICE_DEVICE = "cuda"  # cuda, cpu, auto
+.\start-vibevoice-server.ps1
+
+# Auto-detectar CUDA
+.\start-vibevoice-server.ps1 -Device auto
 ```
 
 **Linux/Mac (Bash):**
 ```bash
 export VIBEVOICE_MODEL="microsoft/VibeVoice-Realtime-0.5B"
 export VIBEVOICE_PORT="3000"
-export VIBEVOICE_DEVICE="cuda"  # cuda, cpu, o mps (Mac)
+export VIBEVOICE_DEVICE="cpu"  # cuda, cpu, mps (Mac M1+)
 ./start-vibevoice-server.sh
+
+# El script detecta automáticamente MPS en Mac M1+
 ```
+
+### Nuevas Características de los Scripts
+
+**Script PowerShell (`start-vibevoice-server.ps1`):**
+- Parámetros por línea de comandos (`-Model`, `-Port`, `-Device`)
+- Auto-detección de CUDA con `-Device auto`
+- Clonado automático con flag `-AutoClone`
+- Ayuda integrada con `-Help`
+- Colores y formato mejorado
+- Validación completa de dependencias
+
+**Script Python (`run-vibevoice-server.py`):**
+- Shim de compatibilidad `torch.xpu` integrado
+- Validación automática de dependencias
+- Logging estructurado con niveles
+- Manejo robusto de errores (puerto ocupado, CUDA no disponible, etc.)
+- Auto-fallback de CUDA → CPU si no está disponible
+- Detección automática de MPS en Mac M1+
+
+**Scripts Batch/Bash actualizados:**
+- Clonado automático de VibeVoice si no existe
+- Mejor manejo de errores con mensajes descriptivos
+- Configuración de PYTHONPATH para pyshim
+- Instalación automática de dependencias en primera ejecución
 
 ### Opciones del Cliente
 
@@ -405,6 +489,30 @@ async function synthesizeWithLimit(text) {
 curl http://localhost:3000/config
 
 # Si no responde, iniciar servidor
+./start-vibevoice-server.sh
+```
+
+### Error: "VibeVoice no encontrado"
+
+**Causa**: El repositorio no está clonado en la ubicación correcta.
+
+**Solución manual**:
+```bash
+# Desde Plataforma/tts/, clonar en la ubicación correcta
+cd ../../repo
+git clone https://github.com/microsoft/VibeVoice.git
+cd ../Plataforma/tts
+
+# Verificar que existe
+ls ../../repo/VibeVoice
+```
+
+**Solución automática**:
+```powershell
+# PowerShell
+.\start-vibevoice-server.ps1 -AutoClone
+
+# Bash/Batch clonan automáticamente
 ./start-vibevoice-server.sh
 ```
 

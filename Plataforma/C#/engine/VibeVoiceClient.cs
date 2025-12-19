@@ -33,8 +33,8 @@ namespace EngineConsole
             _serverUrl = config.ServerUrl ?? "ws://localhost:3000";
             _defaultVoice = config.DefaultVoice ?? "Carter";
             _cfgScale = config.CfgScale ?? 1.5;
-            _steps = config.Steps ?? 5;
-            _timeout = config.Timeout ?? 120000;
+            _steps = config.Steps ?? 2;  // OPTIMIZADO: Reducido de 5 a 2 para CPU
+            _timeout = config.Timeout ?? 600000;  // OPTIMIZADO: 10 minutos para CPU (antes 2 min)
             _debug = config.Debug ?? false;
 
             _httpClient = new HttpClient
@@ -117,11 +117,15 @@ namespace EngineConsole
 
             using var ws = new ClientWebSocket();
 
-            var wsUrl = $"{_serverUrl}/stream?text={Uri.EscapeDataString(text)}&voice={Uri.EscapeDataString(voice)}&cfg={cfgScale}&steps={steps}";
+            // IMPORTANTE: Codificar texto como UTF-8 para evitar problemas con caracteres españoles
+            var encodedText = Uri.EscapeDataString(text);
+            var wsUrl = $"{_serverUrl}/stream?text={encodedText}&voice={Uri.EscapeDataString(voice)}&cfg={cfgScale}&steps={steps}";
 
             if (_debug)
             {
                 Console.WriteLine($"[VibeVoice] Conectando a: {wsUrl}");
+                Console.WriteLine($"[VibeVoice] Parámetros: voice={voice}, cfg={cfgScale}, steps={steps}");
+                Console.WriteLine($"[VibeVoice] Texto original: {text}");
             }
 
             try
@@ -290,8 +294,15 @@ namespace EngineConsole
         public string? ServerUrl { get; set; } = "ws://localhost:3000";
         public string? DefaultVoice { get; set; } = "Carter";
         public double? CfgScale { get; set; } = 1.5;
-        public int? Steps { get; set; } = 5;
-        public int? Timeout { get; set; } = 120000;
+        /// <summary>
+        /// Pasos de difusión: 1-5 (menor = más rápido, mayor = mejor calidad).
+        /// Recomendado: 2 para CPU, 5 para GPU
+        /// </summary>
+        public int? Steps { get; set; } = 2;  // OPTIMIZADO para CPU
+        /// <summary>
+        /// Timeout en milisegundos. Default: 10 minutos (600000ms) para CPU lento
+        /// </summary>
+        public int? Timeout { get; set; } = 600000;  // 10 minutos
         public bool? Debug { get; set; } = false;
     }
 

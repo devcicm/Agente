@@ -42,6 +42,8 @@ namespace EngineConsole
             Timeout = TimeSpan.FromSeconds(120)
         };
 
+        private static int _ttsStreamCounter = 1;
+
         private static readonly JsonSerializerOptions JsonOptions = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -303,7 +305,7 @@ namespace EngineConsole
             return raw;
         }
 
-        public static async Task<ThinkingResponse> StreamAsync(string baseUrl, string modelId, string input, CancellationToken cancellationToken, bool showDebug = false)
+        public static async Task<ThinkingResponse> StreamAsync(string baseUrl, string modelId, string input, CancellationToken cancellationToken, bool showDebug = false, bool useTts = false, VibeVoiceClient? ttsClient = null)
         {
             var result = new ThinkingResponse();
             var payload = new
@@ -348,12 +350,47 @@ namespace EngineConsole
 
             var fullContent = new StringBuilder();
             var rawEvents = new List<string>();
+            var sentenceBuffer = new StringBuilder();
+            var ttsPromises = new List<Task>();
+            var sentenceEnders = new[] { '.', '!', '?' };
+
+            // Indicador visual de TTS activado
+            if (useTts)
+            {
+                // Verificar disponibilidad del servidor TTS
+                bool ttsAvailable = false;
+                if (ttsClient != null)
+                {
+                    try
+                    {
+                        ttsAvailable = await ttsClient.CheckHealthAsync();
+                    }
+                    catch
+                    {
+                        ttsAvailable = false;
+                    }
+                }
+
+                if (ttsAvailable)
+                {
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine("\n🔊 TTS: Escuchando frases en tiempo real...\n");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("\n❌ TTS: Servidor no disponible - TTS deshabilitado\n");
+                    Console.ResetColor();
+                    useTts = false; // Deshabilitar TTS si el servidor no está disponible
+                }
+            }
 
             while (!reader.EndOfStream)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var line = await reader.ReadLineAsync();
-                
+
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
                 rawEvents.Add(line);
@@ -369,7 +406,7 @@ namespace EngineConsole
                 if (!line.StartsWith("data:")) continue;
 
                 var jsonData = line.Substring("data:".Length).Trim();
-                if (jsonData == "[DONE]") 
+                if (jsonData == "[DONE]")
                 {
                     LogToFile("[STREAM] Señal [DONE] recibida");
                     if (showDebug)
@@ -385,11 +422,11 @@ namespace EngineConsole
                 {
                     using var doc = JsonDocument.Parse(jsonData);
                     var root = doc.RootElement;
-                    
+
                     if (root.TryGetProperty("type", out var typeProp))
                     {
                         var eventType = typeProp.GetString();
-                        
+
                         if (eventType == "response.output_text.delta" && root.TryGetProperty("delta", out var delta))
                         {
                             var chunk = delta.GetString();
@@ -398,6 +435,27 @@ namespace EngineConsole
                                 var processedChunk = ProcessSpecialCharacters(chunk);
                                 fullContent.Append(processedChunk);
                                 Console.Write(processedChunk);
+
+                                // TTS streaming: acumular y detectar frases
+                                if (useTts)
+                                {
+                                    sentenceBuffer.Append(processedChunk);
+                                    var bufferText = sentenceBuffer.ToString().TrimEnd();
+                                    if (bufferText.Length > 15 && sentenceEnders.Contains(bufferText[bufferText.Length - 1]))
+                                    {
+                                        var sentence = bufferText;
+                                        sentenceBuffer.Clear();
+
+                                        // Indicador de frase detectada
+                                        Console.WriteLine();
+                                        Console.ForegroundColor = ConsoleColor.Green;
+                                        Console.WriteLine($"🎵 TTS: Frase detectada ({sentence.Length} caracteres)");
+                                        Console.ResetColor();
+
+                                        // Sintetizar en background (no bloquear el stream)
+                                        ttsPromises.Add(SynthesizeAndPlaySentenceAsync(sentence, ttsClient));
+                                    }
+                                }
                             }
                         }
                         else if (showDebug)
@@ -436,6 +494,42 @@ namespace EngineConsole
                         Console.ResetColor();
                     }
                     continue;
+                }
+            }
+
+            // Procesar cualquier frase restante en el buffer
+            if (useTts && sentenceBuffer.Length > 3)
+            {
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"🎵 TTS: Frase final detectada ({sentenceBuffer.Length} caracteres)");
+                Console.ResetColor();
+                ttsPromises.Add(SynthesizeAndPlaySentenceAsync(sentenceBuffer.ToString().Trim(), ttsClient));
+            }
+
+            // Esperar a que todas las síntesis TTS terminen
+            if (useTts && ttsPromises.Count > 0)
+            {
+                try
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine($"⏳ TTS: Esperando {ttsPromises.Count} síntesis...");
+                    Console.ResetColor();
+
+                    await Task.WhenAll(ttsPromises);
+
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"✅ TTS: {ttsPromises.Count} frases completadas");
+                    Console.ResetColor();
+
+                    LogToFile($"[TTS] {ttsPromises.Count} frases sintetizadas");
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"❌ TTS: Error en síntesis - {ex.Message}");
+                    Console.ResetColor();
                 }
             }
 
@@ -770,7 +864,7 @@ namespace EngineConsole
 
         // Nuevo método para ejecutar múltiples LLMs en paralelo
         public static async Task<List<(string model, ThinkingResponse result)>> RunMultipleModelsAsync(
-            string baseUrl, List<string> modelIds, string input, bool useStream, bool showDebug = false)
+            string baseUrl, List<string> modelIds, string input, bool useStream, bool showDebug = false, bool useTts = false, VibeVoiceClient? ttsClient = null)
         {
             var tasks = modelIds.Select(async modelId =>
             {
@@ -780,7 +874,7 @@ namespace EngineConsole
                     if (useStream)
                     {
                         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-                        result = await StreamAsync(baseUrl, modelId, input, cts.Token, showDebug);
+                        result = await StreamAsync(baseUrl, modelId, input, cts.Token, showDebug, useTts, ttsClient);
                     }
                     else
                     {
@@ -798,6 +892,71 @@ namespace EngineConsole
 
             var results = await Task.WhenAll(tasks);
             return results.ToList();
+        }
+
+        // Reproducir archivo de audio usando PowerShell (Windows)
+        private static void PlayAudioFile(string filePath)
+        {
+            try
+            {
+                var absolutePath = Path.GetFullPath(filePath);
+                var psCommand = $@"
+                    Add-Type -AssemblyName System.Media
+                    $player = New-Object System.Media.SoundPlayer '{absolutePath.Replace("\\", "\\\\")}'
+                    $player.PlaySync()
+                ";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = $"-Command \"{psCommand}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true
+                };
+
+                using var process = Process.Start(psi);
+                // No esperamos - reproducción en background
+            }
+            catch (Exception)
+            {
+                // Ignorar errores de reproducción
+            }
+        }
+
+        // Sintetizar y reproducir una frase individual (streaming en tiempo real)
+        private static async Task SynthesizeAndPlaySentenceAsync(string sentence, VibeVoiceClient? ttsClient)
+        {
+            if (string.IsNullOrWhiteSpace(sentence) || sentence.Length < 3 || ttsClient == null)
+                return;
+
+            try
+            {
+                var outputFile = $"tts-stream-{System.Threading.Interlocked.Increment(ref _ttsStreamCounter)}.wav";
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"⏳ TTS: Sintetizando \"{sentence.Substring(0, Math.Min(40, sentence.Length))}...\"");
+                Console.ResetColor();
+
+                var result = await ttsClient.SynthesizeAsync(sentence, new SynthesisOptions
+                {
+                    Voice = "Carter",
+                    OutputFile = outputFile
+                });
+
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.WriteLine($"🔊 TTS: Reproduciendo {outputFile} ({result.Audio.Length} bytes)");
+                Console.ResetColor();
+
+                // Reproducir en background (no bloquear)
+                PlayAudioFile(outputFile);
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"❌ TTS Error: {ex.Message}");
+                Console.ResetColor();
+            }
         }
     }
 
@@ -1000,9 +1159,33 @@ namespace EngineConsole
                     _useTts = hasTts;
                     if (_useTts)
                     {
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("✓ Streaming + TTS: activado");
-                        Console.ResetColor();
+                        // Verificar disponibilidad del servidor TTS
+                        var ttsClient = GetTtsClient();
+                        bool isHealthy = false;
+                        try
+                        {
+                            isHealthy = ttsClient.CheckHealthAsync().GetAwaiter().GetResult();
+                        }
+                        catch
+                        {
+                            isHealthy = false;
+                        }
+
+                        if (isHealthy)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("✓ Streaming + TTS: activado");
+                            Console.ResetColor();
+                        }
+                        else
+                        {
+                            Console.ForegroundColor = ConsoleColor.Yellow;
+                            Console.WriteLine("⚠ Streaming: activado | TTS: activado (ADVERTENCIA)");
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine("❌ Servidor TTS no disponible en ws://localhost:3000");
+                            Console.WriteLine("   Inicia el servidor VibeVoice para usar TTS");
+                            Console.ResetColor();
+                        }
                     }
                     else
                     {
@@ -1313,8 +1496,14 @@ namespace EngineConsole
                 {
                     ServerUrl = Environment.GetEnvironmentVariable("VIBEVOICE_URL") ?? "ws://localhost:3000",
                     DefaultVoice = "Carter",
-                    Debug = false
+                    Steps = 2,        // OPTIMIZADO para CPU (más rápido)
+                    Timeout = 600000, // 10 minutos para CPU lento
+                    Debug = false     // Cambia a true para ver logs detallados
                 });
+
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("ℹ TTS configurado: steps=2 (optimizado para CPU), timeout=10min");
+                Console.ResetColor();
             }
             return _ttsClient;
         }
@@ -1374,7 +1563,7 @@ namespace EngineConsole
                     Console.WriteLine($"[Ejecutando en {modelIds.Count} modelos: {string.Join(", ", modelIds)}]");
                     Console.ResetColor();
 
-                    var results = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, input, useStream, showDebug);
+                    var results = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, input, useStream, showDebug, _useTts, _useTts ? GetTtsClient() : null);
 
                     Console.ForegroundColor = ConsoleColor.Cyan;
                     Console.WriteLine("\n=== COMPARACIÓN DE RESPUESTAS ===");
@@ -1446,16 +1635,16 @@ namespace EngineConsole
                             }
                         });
 
-                        var result = await Engine.StreamAsync(baseUrl, modelId, input, cts.Token, showDebug);
+                        var result = await Engine.StreamAsync(baseUrl, modelId, input, cts.Token, showDebug, _useTts, _useTts ? GetTtsClient() : null);
                         cts.Cancel();
-                        
+
                         try { await ticker; } catch { }
 
                         Console.WriteLine();
                         Console.ForegroundColor = ConsoleColor.Cyan;
                         Console.WriteLine("\n=== RESULTADO ESTRUCTURADO ===");
                         Console.ResetColor();
-                        
+
                         if (result.HasThinking)
                         {
                             Console.ForegroundColor = ConsoleColor.DarkYellow;
@@ -1463,7 +1652,7 @@ namespace EngineConsole
                             Console.WriteLine(result.Thinking);
                             Console.WriteLine();
                         }
-                        
+
                         if (result.HasResponse)
                         {
                             Console.ForegroundColor = ConsoleColor.Green;
@@ -1471,8 +1660,8 @@ namespace EngineConsole
                             Console.WriteLine(result.Response);
                             Console.ResetColor();
 
-                            // Sintetizar audio si TTS está activado
-                            await SynthesizeIfEnabledAsync(result.Response);
+                            // TTS ahora se ejecuta en tiempo real durante el streaming
+                            // (no es necesario sintetizar después)
                         }
 
                         if (!result.HasThinking && !result.HasResponse)
@@ -1576,7 +1765,8 @@ namespace EngineConsole
                 
                 try
                 {
-                    var responses = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, question.Question, useStream, showDebug);
+                    // TTS desactivado para testing masivo (demasiadas preguntas)
+                    var responses = await Engine.RunMultipleModelsAsync(baseUrl, modelIds, question.Question, useStream, showDebug, false, null);
                     
                     foreach (var (model, response) in responses)
                     {

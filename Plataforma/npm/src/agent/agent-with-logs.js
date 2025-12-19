@@ -468,13 +468,136 @@ async function synthesizeIfEnabled(text) {
 
     const outputFile = `tts-output-${ttsCounter++}.wav`;
     const result = await client.synthesize(text, {
-      voice: 'Carter',
+      voice: 'en-Carter_man',
       outputFile
     });
 
     console.log(`${ICON.ok} Audio generado: ${outputFile} (${(result.audio.length / 1024).toFixed(2)} KB)`);
+
+    // Reproducir audio automáticamente
+    playAudioFile(outputFile);
   } catch (error) {
     console.log(`${ICON.error} Error TTS: ${error.message}`);
+  }
+}
+
+// Reproducir audio usando el sistema (cross-platform)
+function playAudioFile(filePath) {
+  const { exec } = require('child_process');
+  const path = require('path');
+  const absolutePath = path.resolve(filePath);
+
+  if (process.platform === 'win32') {
+    // Windows: usar PowerShell con SoundPlayer
+    const psCommand = `Add-Type -AssemblyName System.Speech; $player = New-Object System.Media.SoundPlayer '${absolutePath.replace(/\\/g, '\\\\')}'; $player.PlaySync()`;
+    exec(`powershell -Command "${psCommand}"`, (error) => {
+      if (error && config.debug) {
+        console.log(`${ICON.warn} No se pudo reproducir audio: ${error.message}`);
+      }
+    });
+  } else if (process.platform === 'darwin') {
+    // macOS: usar afplay
+    exec(`afplay "${absolutePath}"`, (error) => {
+      if (error && config.debug) {
+        console.log(`${ICON.warn} No se pudo reproducir audio: ${error.message}`);
+      }
+    });
+  } else {
+    // Linux: usar aplay o paplay
+    exec(`aplay "${absolutePath}" || paplay "${absolutePath}"`, (error) => {
+      if (error && config.debug) {
+        console.log(`${ICON.warn} No se pudo reproducir audio: ${error.message}`);
+      }
+    });
+  }
+}
+
+// Streaming TTS en tiempo real: sintetiza y reproduce mientras el LLM genera
+async function streamTTSRealtime(textStream) {
+  if (!config.tts) return;
+
+  try {
+    const client = getTtsClient();
+    const isHealthy = await client.checkHealth();
+
+    if (!isHealthy) {
+      console.log(`\n${ICON.warn} Servidor TTS no disponible - continuando sin audio`);
+      return;
+    }
+
+    let sentenceBuffer = '';
+    const sentenceEnders = ['.', '!', '?', '\n'];
+
+    // Procesar cada chunk de texto que llega
+    for await (const chunk of textStream) {
+      sentenceBuffer += chunk;
+
+      // Detectar final de frase
+      const lastChar = sentenceBuffer[sentenceBuffer.length - 1];
+      if (sentenceEnders.includes(lastChar) && sentenceBuffer.trim().length > 10) {
+        const sentence = sentenceBuffer.trim();
+        sentenceBuffer = '';
+
+        // Sintetizar y reproducir esta frase inmediatamente
+        const outputFile = `tts-stream-${ttsCounter++}.wav`;
+
+        try {
+          await client.synthesize(sentence, {
+            voice: 'en-Carter_man',
+            outputFile
+          });
+
+          // Reproducir en background mientras continúa el streaming
+          playAudioFile(outputFile);
+        } catch (err) {
+          if (config.debug) {
+            console.log(`${ICON.warn} Error TTS para frase: ${err.message}`);
+          }
+        }
+      }
+    }
+
+    // Sintetizar cualquier texto restante
+    if (sentenceBuffer.trim().length > 5) {
+      const outputFile = `tts-stream-${ttsCounter++}.wav`;
+      try {
+        await client.synthesize(sentenceBuffer.trim(), {
+          voice: 'en-Carter_man',
+          outputFile
+        });
+        playAudioFile(outputFile);
+      } catch (err) {
+        // Ignorar errores en fragmento final
+      }
+    }
+  } catch (error) {
+    if (config.debug) {
+      console.log(`${ICON.error} Error streaming TTS: ${error.message}`);
+    }
+  }
+}
+
+// Sintetizar y reproducir una frase individual (para streaming en tiempo real)
+async function synthesizeAndPlaySentence(sentence) {
+  if (!sentence || sentence.trim().length < 3) return;
+
+  try {
+    const client = getTtsClient();
+    const outputFile = `tts-stream-${ttsCounter++}.wav`;
+
+    // Sintetizar esta frase
+    await client.synthesize(sentence, {
+      voice: 'en-Carter_man',
+      outputFile
+    });
+
+    // Reproducir en background (no bloquear)
+    playAudioFile(outputFile);
+  } catch (error) {
+    // Silenciar errores individuales de síntesis para no interrumpir el stream
+    if (config.debug) {
+      console.log(`${ICON.warn} Error TTS frase: ${error.message}`);
+    }
   }
 }
 
@@ -838,7 +961,23 @@ async function streamResponse(payload) {
 
   logger.info('Iniciando modo streaming');
 
+  // Verificar disponibilidad del servidor TTS si está activado
+  if (config.tts) {
+    try {
+      const client = getTtsClient();
+      const isHealthy = await client.checkHealth();
 
+      if (isHealthy) {
+        console.log(`\n${ICON.ok} TTS: Escuchando frases en tiempo real...\n`);
+      } else {
+        console.log(`\n${ICON.error} TTS: Servidor no disponible - TTS deshabilitado\n`);
+        config.tts = false; // Deshabilitar TTS si el servidor no está disponible
+      }
+    } catch (error) {
+      console.log(`\n${ICON.error} TTS: Servidor no disponible - TTS deshabilitado\n`);
+      config.tts = false;
+    }
+  }
 
   const response = await httpClient.post('/v1/responses', payload, {
 
@@ -853,6 +992,9 @@ async function streamResponse(payload) {
   return new Promise((resolve, reject) => {
 
     let fullContent = '';
+    let sentenceBuffer = '';
+    const ttsPromises = [];
+    const sentenceEnders = ['.', '!', '?'];
 
 
 
@@ -876,6 +1018,18 @@ async function streamResponse(payload) {
 
           fullContent += parsed.delta;
 
+          // TTS streaming: acumular y detectar frases
+          if (config.tts) {
+            sentenceBuffer += parsed.delta;
+            const lastChar = sentenceBuffer.trim()[sentenceBuffer.trim().length - 1];
+            if (sentenceEnders.includes(lastChar) && sentenceBuffer.trim().length > 15) {
+              const sentence = sentenceBuffer.trim();
+              sentenceBuffer = '';
+              // Sintetizar en background (no bloquear el stream)
+              ttsPromises.push(synthesizeAndPlaySentence(sentence));
+            }
+          }
+
           return;
 
         }
@@ -894,6 +1048,17 @@ async function streamResponse(payload) {
 
           fullContent += alt;
 
+          // TTS streaming
+          if (config.tts) {
+            sentenceBuffer += alt;
+            const lastChar = sentenceBuffer.trim()[sentenceBuffer.trim().length - 1];
+            if (sentenceEnders.includes(lastChar) && sentenceBuffer.trim().length > 15) {
+              const sentence = sentenceBuffer.trim();
+              sentenceBuffer = '';
+              ttsPromises.push(synthesizeAndPlaySentence(sentence));
+            }
+          }
+
         }
 
       } catch {
@@ -910,13 +1075,29 @@ async function streamResponse(payload) {
 
     response.data.on('error', reject);
 
-    response.data.on('end', () => {
+    response.data.on('end', async () => {
 
       console.log();
 
       logger.info('Streaming completado');
 
+      // Procesar cualquier frase restante en el buffer
+      if (config.tts && sentenceBuffer.trim().length > 3) {
+        ttsPromises.push(synthesizeAndPlaySentence(sentenceBuffer.trim()));
+      }
 
+      // Esperar a que todas las síntesis TTS terminen
+      if (config.tts && ttsPromises.length > 0) {
+        try {
+          await Promise.all(ttsPromises);
+          logger.info(`TTS: ${ttsPromises.length} frases sintetizadas`);
+        } catch (error) {
+          // Ignorar errores de TTS para no bloquear la respuesta
+          if (config.debug) {
+            logger.warn('Algunos archivos TTS fallaron');
+          }
+        }
+      }
 
       resolve({
 
@@ -994,7 +1175,7 @@ function parseBoolWord(x) {
 
 
 
-function applyStreamCommand(args) {
+async function applyStreamCommand(args) {
 
   // Detectar '/stream on tts' o '/stream tts'
   const hasTts = args.some(arg => arg.toLowerCase() === 'tts');
@@ -1026,7 +1207,23 @@ function applyStreamCommand(args) {
   config.tts = b && hasTts; // TTS solo si stream es true Y se especificó 'tts'
 
   if (config.tts) {
-    console.log(`${ICON.ok} Streaming + TTS: ON`);
+    // Verificar disponibilidad del servidor TTS
+    try {
+      const client = getTtsClient();
+      const isHealthy = await client.checkHealth();
+
+      if (isHealthy) {
+        console.log(`${ICON.ok} Streaming + TTS: ON`);
+      } else {
+        console.log(`${ICON.warn} Streaming: ON | TTS: ON (ADVERTENCIA)`);
+        console.log(`${ICON.error} Servidor TTS no disponible en ws://localhost:3000`);
+        console.log(`${ICON.info} Inicia el servidor VibeVoice para usar TTS`);
+      }
+    } catch (error) {
+      console.log(`${ICON.warn} Streaming: ON | TTS: ON (ADVERTENCIA)`);
+      console.log(`${ICON.error} Servidor TTS no disponible en ws://localhost:3000`);
+      console.log(`${ICON.info} Inicia el servidor VibeVoice para usar TTS`);
+    }
   } else {
     console.log(`${ICON.ok} Streaming: ${config.stream ? 'ON' : 'OFF'} | TTS: OFF`);
   }
@@ -1521,7 +1718,7 @@ program.command('model <id>').action(async (id) => { await changeModel(id); proc
 
 program.command('origins <url>').action(async (url) => { await setOrigin(url); process.exit(0); });
 
-program.command('stream [mode]').action(async (mode) => { applyStreamCommand([mode]); process.exit(0); });
+program.command('stream [mode]').action(async (mode) => { await applyStreamCommand([mode]); process.exit(0); });
 
 program.command('debug [mode]').action(async (mode) => { applyDebugCommand([mode]); process.exit(0); });
 
@@ -1732,7 +1929,7 @@ async function startInteractiveMode() {
 
         case '/stream':
 
-          applyStreamCommand(args);
+          await applyStreamCommand(args);
 
           return rl.prompt();
 

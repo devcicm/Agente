@@ -65,5 +65,19 @@ repo/
 # ============================================
 tts-output-*.wav
 test-tts-*.wav
+test_tts_*.wav
+test_tts_*.pcm
 output-*.wav
 *-output.wav
+*_output.wav
+*_output.pcm
+
+# ============================================
+# Test scripts temporales
+# ============================================
+test-tts-*.ps1
+test-tts-*.js
+test-stream.json
+test-tts-npm.txt
+test-tts-emoji.ps1
+test-tts-warnings.js
